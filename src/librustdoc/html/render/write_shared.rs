@@ -78,7 +78,7 @@ pub(super) fn write_shared(
             try_none!(try_none!(entry.path.extension(), &entry.path).to_str(), &entry.path);
 
         // Skip the official themes. They are written below as part of STATIC_FILES_LIST.
-        if matches!(theme.as_str(), "light" | "dark" | "ayu") {
+        if matches!(theme.as_str(), "light" | "dark" | "ayu" | "rusty") {
             continue;
         }
 
