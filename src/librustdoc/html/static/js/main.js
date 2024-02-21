@@ -1352,13 +1352,13 @@ href="https://doc.rust-lang.org/${channel}/rustdoc/read-documentation/search.htm
         container.id = "help";
         container.style.display = "none";
 
-        const side_by_side = document.createElement("div");
-        side_by_side.className = "side-by-side";
-        side_by_side.appendChild(div_shortcuts);
-        side_by_side.appendChild(div_infos);
+        const keys_list = document.createElement("div");
+        keys_list.className = "keys-list";
+        keys_list.appendChild(div_shortcuts);
+        keys_list.appendChild(div_infos);
 
         container.appendChild(book_info);
-        container.appendChild(side_by_side);
+        container.appendChild(keys_list);
         container.appendChild(rustdoc_version);
 
         if (isHelpPage) {

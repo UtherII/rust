@@ -87,6 +87,21 @@
         {% endif %}
         </a> {# #}
         {% endif %}
+        <form class="search-form"> {# #}
+            <input {#+ #}
+                class="search-input" {#+ #}
+                name="search" {#+ #}
+                aria-label="Run search in the documentation" {#+ #}
+                autocomplete="off" {#+ #}
+                spellcheck="false" {#+ #}
+                placeholder="Press to search" {#+ #}
+                type="search"> {# #}
+            <div id="settings-menu-mobile" tabindex="-1"> {# #}
+                <a href="{{page.root_path|safe}}settings.html" title="settings"> {# #}
+                    ⚙
+                </a> {# #}
+            </div> {# #}
+        </form> {# #}        
     </nav>
     {% endif %}
     <nav class="sidebar"> {# #}
@@ -116,36 +131,35 @@
             <h2>Files</h2> {# #}
         </div> {# #}
         {% endif %}
+        <nav class="sub"> {# #}
+            <form class="search-form"> {# #}
+                <span></span> {# This empty span is a hacky fix for Safari - See #93184 #}
+                <input {#+ #}
+                    class="search-input" {#+ #}
+                    name="search" {#+ #}
+                    aria-label="Run search in the documentation" {#+ #}
+                    autocomplete="off" {#+ #}
+                    spellcheck="false" {#+ #}
+                    placeholder="Press ‘S’ to search, ‘?’ for tips…" {#+ #}
+                    type="search"> {# #}
+                <div id="help-button" tabindex="-1"> {# #}
+                    <a href="{{page.root_path|safe}}help.html" title="help">?</a> {# #}
+                </div> {# #}
+                <div id="settings-menu" tabindex="-1"> {# #}
+                    <a href="{{page.root_path|safe}}settings.html" title="settings"> {# #}
+                        ⚙
+                    </a> {# #}
+                </div> {# #}
+            </form> {# #}
+        </nav> {# #}
         {{ sidebar|safe }}
     </nav> {# #}
     <div class="sidebar-resizer"></div>
     <main> {# #}
+        <div id="sidebar-button" tabindex="-1"> {# #}
+            <a href="{{page.root_path|safe}}{{layout.krate|safe}}/all.html" title="show sidebar"></a> {# #}
+        </div> {# #}
         {% if page.css_class != "src" %}<div class="width-limiter">{% endif %}
-            <nav class="sub"> {# #}
-                <form class="search-form"> {# #}
-                    <span></span> {# This empty span is a hacky fix for Safari - See #93184 #}
-                    <div id="sidebar-button" tabindex="-1"> {# #}
-                        <a href="{{page.root_path|safe}}{{layout.krate|safe}}/all.html" title="show sidebar"></a> {# #}
-                    </div> {# #}
-                    <input {#+ #}
-                        class="search-input" {#+ #}
-                        name="search" {#+ #}
-                        aria-label="Run search in the documentation" {#+ #}
-                        autocomplete="off" {#+ #}
-                        spellcheck="false" {#+ #}
-                        placeholder="Click or press ‘S’ to search, ‘?’ for more options…" {#+ #}
-                        type="search"> {# #}
-                    <div id="help-button" tabindex="-1"> {# #}
-                        <a href="{{page.root_path|safe}}help.html" title="help">?</a> {# #}
-                    </div> {# #}
-                    <div id="settings-menu" tabindex="-1"> {# #}
-                        <a href="{{page.root_path|safe}}settings.html" title="settings"> {# #}
-                            <img width="22" height="22" alt="Change settings" {#+ #}
-                            src="{{static_root_path|safe}}{{files.wheel_svg}}"> {# #}
-                        </a> {# #}
-                    </div> {# #}
-                </form> {# #}
-            </nav> {# #}
             <section id="main-content" class="content">{{ content|safe }}</section> {# #}
         {% if page.css_class != "src" %}</div>{% endif %}
     </main> {# #}

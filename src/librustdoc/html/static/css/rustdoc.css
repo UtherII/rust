@@ -814,7 +814,7 @@ nav.sub {
 .search-form {
 	position: relative;
 	display: flex;
-	height: 34px;
+	height: 24px;
 	flex-grow: 1;
 }
 .src nav.sub {
@@ -994,8 +994,9 @@ so that we can apply CSS-filters to change the arrow color in themes */
 	outline: none;
 	border: 1px solid var(--border-color);
 	border-radius: 2px;
-	padding: 8px;
-	font-size: 1rem;
+	margin: 0 2px;
+	padding: 2px;
+	font-size: 0.75rem;
 	flex-grow: 1;
 	background-color: var(--button-background-color);
 	color: var(--search-color);
@@ -1064,7 +1065,7 @@ so that we can apply CSS-filters to change the arrow color in themes */
 	top: 100%;
 	right: 0;
 	z-index: calc(var(--desktop-sidebar-z-index) + 1);
-	margin-top: 7px;
+	margin: 7px 3px 0px 3px;
 	border-radius: 3px;
 	border: 1px solid var(--border-color);
 	background-color: var(--main-background-color);
@@ -1090,9 +1091,9 @@ so that we can apply CSS-filters to change the arrow color in themes */
 }
 
 .setting-radio input, .setting-check input {
-	margin-right: 0.3em;
+	margin-right: 0.5em;
 	height: 1.2rem;
-	width: 1.2rem;
+	min-width: 1.2rem;
 	border: 2px solid var(--settings-input-border-color);
 	outline: none;
 	-webkit-appearance: none;
@@ -1175,10 +1176,8 @@ so that we can apply CSS-filters to change the arrow color in themes */
 	clear: both;
 	border-top: 1px solid var(--border-color);
 }
-.side-by-side > div {
-	width: 50%;
-	float: left;
-	padding: 0 20px 20px 17px;
+.keys-list > div {
+	padding: 0 10px 20px 10px;
 }
 
 .item-info .stab {
@@ -1558,7 +1557,7 @@ a.tooltip:hover::after {
 }
 
 #settings-menu, #help-button {
-	margin-left: 4px;
+	margin: 0px 2px;
 	display: flex;
 }
 #sidebar-button {
@@ -1583,7 +1582,7 @@ a.tooltip:hover::after {
 .hide-sidebar .src #sidebar-button {
 	position: static;
 }
-#settings-menu > a, #help-button > a, #sidebar-button > a {
+#settings-menu > a, #settings-menu-mobile > a, #help-button > a, #sidebar-button > a {
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -1594,7 +1593,7 @@ a.tooltip:hover::after {
 	/* Rare exception to specifying font sizes in rem. Since this is acting
 	   as an icon, it's okay to specify their sizes in pixels. */
 	font-size: 20px;
-	width: 33px;
+	width: 24px;
 }
 
 #settings-menu > a:hover, #settings-menu > a:focus,
@@ -1956,6 +1955,14 @@ in src-script.js and main.js
 		margin: 5px 0 5px 20px;
 	}
 
+	.mobile-topbar .search-form {
+		height: 1em;
+		margin: 6px;
+	}
+	.mobile-topbar .popover {
+		font-size: 1em;
+	}
+	  
 	.mobile-topbar {
 		display: flex;
 		flex-direction: row;
@@ -1979,6 +1986,10 @@ in src-script.js and main.js
 	}
 
 	.hide-sidebar .sidebar-menu-toggle {
+		display: none;
+	}
+
+	.sidebar .sub {
 		display: none;
 	}
 
