@@ -5,7 +5,7 @@
 // the page, so we don't see major layout changes during the load of the page.
 "use strict";
 
-const builtinThemes = ["light", "dark", "ayu"];
+const builtinThemes = ["light", "dark", "ayu", "rusty"];
 const darkThemes = ["dark", "ayu"];
 window.currentTheme = document.getElementById("themeStyle");
 

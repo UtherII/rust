@@ -147,7 +147,7 @@
      */
     function buildSettingsPage() {
         const theme_names = getVar("themes").split(",").filter(t => t);
-        theme_names.push("light", "dark", "ayu");
+        theme_names.push("light", "dark", "ayu", "rusty");
 
         const settings = [
             {
