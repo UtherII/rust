@@ -534,7 +534,10 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
     ) -> Option<CrateNum> {
         self.used_extern_options.insert(name);
         match self.maybe_resolve_crate(name, dep_kind, None) {
-            Ok(cnum) => Some(cnum),
+            Ok(cnum) => {
+                self.cstore.set_used_recursively(cnum);
+                Some(cnum)
+            }
             Err(err) => {
                 let missing_core =
                     self.maybe_resolve_crate(sym::core, CrateDepKind::Explicit, None).is_err();

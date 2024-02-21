@@ -11,7 +11,7 @@ pub use self::suggest::SelfSource;
 pub use self::MethodError::*;
 
 use crate::FnCtxt;
-use rustc_errors::{Applicability, Diagnostic, SubdiagnosticMessage};
+use rustc_errors::{Applicability, DiagnosticBuilder, SubdiagnosticMessage};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorOf, DefKind, Namespace};
 use rustc_hir::def_id::DefId;
@@ -38,7 +38,7 @@ pub struct MethodCallee<'tcx> {
     pub args: GenericArgsRef<'tcx>,
 
     /// Instantiated method signature, i.e., it has been
-    /// substituted, normalized, and has had late-bound
+    /// instantiated, normalized, and has had late-bound
     /// lifetimes replaced with inference variables.
     pub sig: ty::FnSig<'tcx>,
 }
@@ -126,7 +126,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     #[instrument(level = "debug", skip(self, err, call_expr))]
     pub(crate) fn suggest_method_call(
         &self,
-        err: &mut Diagnostic,
+        err: &mut DiagnosticBuilder<'_>,
         msg: impl Into<SubdiagnosticMessage> + std::fmt::Debug,
         method_name: Ident,
         self_ty: Ty<'tcx>,
@@ -395,7 +395,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         debug!("lookup_in_trait_adjusted: method_item={:?}", method_item);
         let mut obligations = vec![];
 
-        // Instantiate late-bound regions and substitute the trait
+        // Instantiate late-bound regions and instantiate the trait
         // parameters into the method type to get the actual method type.
         //
         // N.B., instantiate late-bound regions before normalizing the

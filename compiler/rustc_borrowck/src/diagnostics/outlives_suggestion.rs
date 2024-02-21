@@ -1,8 +1,11 @@
 //! Contains utilities for generating suggestions for borrowck errors related to unsatisfied
 //! outlives constraints.
 
+#![allow(rustc::diagnostic_outside_of_impl)]
+#![allow(rustc::untranslatable_diagnostic)]
+
 use rustc_data_structures::fx::FxIndexSet;
-use rustc_errors::Diagnostic;
+use rustc_errors::DiagnosticBuilder;
 use rustc_middle::ty::RegionVid;
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
@@ -155,13 +158,13 @@ impl OutlivesSuggestionBuilder {
         self.constraints_to_add.entry(fr).or_default().push(outlived_fr);
     }
 
-    /// Emit an intermediate note on the given `Diagnostic` if the involved regions are
+    /// Emit an intermediate note on the given `DiagnosticBuilder` if the involved regions are
     /// suggestable.
     pub(crate) fn intermediate_suggestion(
         &mut self,
         mbcx: &MirBorrowckCtxt<'_, '_>,
         errci: &ErrorConstraintInfo<'_>,
-        diag: &mut Diagnostic,
+        diag: &mut DiagnosticBuilder<'_>,
     ) {
         // Emit an intermediate note.
         let fr_name = self.region_vid_to_name(mbcx, errci.fr);
@@ -251,6 +254,6 @@ impl OutlivesSuggestionBuilder {
         diag.sort_span = mir_span.shrink_to_hi();
 
         // Buffer the diagnostic
-        mbcx.buffer_non_error_diag(diag);
+        mbcx.buffer_non_error(diag);
     }
 }

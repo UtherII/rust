@@ -13,7 +13,7 @@ use itertools::Itertools;
 use rustc_ast as ast;
 use rustc_data_structures::fx::FxIndexSet;
 use rustc_errors::{
-    codes::*, pluralize, Applicability, Diagnostic, ErrCode, ErrorGuaranteed, MultiSpan, StashKey,
+    codes::*, pluralize, Applicability, DiagnosticBuilder, ErrorGuaranteed, MultiSpan, StashKey,
 };
 use rustc_hir as hir;
 use rustc_hir::def::{CtorOf, DefKind, Res};
@@ -740,8 +740,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         });
 
         // We're done if we found errors, but we already emitted them.
-        if let Some(reported) = reported {
-            assert!(errors.is_empty());
+        if let Some(reported) = reported
+            && errors.is_empty()
+        {
             return reported;
         }
         assert!(!errors.is_empty());
@@ -1269,7 +1270,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         {
             // The user provided `ptr::null()`, but the function expects
             // `ptr::null_mut()`.
-            err.subdiagnostic(SuggestPtrNullMut { span: arg.span });
+            err.subdiagnostic(self.dcx(), SuggestPtrNullMut { span: arg.span });
         }
     }
 
@@ -1319,7 +1320,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 tcx.type_of(tcx.require_lang_item(hir::LangItem::CStr, Some(lit.span)))
                     .skip_binder(),
             ),
-            ast::LitKind::Err => Ty::new_misc_error(tcx),
+            ast::LitKind::Err(guar) => Ty::new_error(tcx, guar),
         }
     }
 
@@ -1726,7 +1727,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     /// Given a function block's `HirId`, returns its `FnDecl` if it exists, or `None` otherwise.
-    fn get_parent_fn_decl(&self, blk_id: hir::HirId) -> Option<(&'tcx hir::FnDecl<'tcx>, Ident)> {
+    pub(crate) fn get_parent_fn_decl(
+        &self,
+        blk_id: hir::HirId,
+    ) -> Option<(&'tcx hir::FnDecl<'tcx>, Ident)> {
         let parent = self.tcx.hir_node_by_def_id(self.tcx.hir().get_parent_item(blk_id).def_id);
         self.get_node_fn_decl(parent).map(|(_, fn_decl, ident, _)| (fn_decl, ident))
     }
@@ -1932,7 +1936,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     fn label_fn_like(
         &self,
-        err: &mut Diagnostic,
+        err: &mut DiagnosticBuilder<'_>,
         callable_def_id: Option<DefId>,
         callee_ty: Option<Ty<'tcx>>,
         call_expr: &'tcx hir::Expr<'tcx>,
@@ -2060,7 +2064,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 let node = self
                     .tcx
                     .opt_local_def_id_to_hir_id(self.tcx.hir().get_parent_item(call_expr.hir_id))
-                    .and_then(|hir_id| self.tcx.opt_hir_node(hir_id));
+                    .map(|hir_id| self.tcx.hir_node(hir_id));
                 match node {
                     Some(hir::Node::Item(item)) => call_finder.visit_item(item),
                     Some(hir::Node::TraitItem(item)) => call_finder.visit_trait_item(item),

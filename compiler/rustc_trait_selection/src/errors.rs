@@ -1,7 +1,7 @@
 use crate::fluent_generated as fluent;
 use rustc_errors::{
-    codes::*, AddToDiagnostic, Applicability, DiagCtxt, Diagnostic, DiagnosticBuilder,
-    EmissionGuarantee, IntoDiagnostic, Level, SubdiagnosticMessage,
+    codes::*, AddToDiagnostic, Applicability, DiagCtxt, DiagnosticBuilder, EmissionGuarantee,
+    IntoDiagnostic, Level, SubdiagnosticMessageOp,
 };
 use rustc_macros::Diagnostic;
 use rustc_middle::ty::{self, ClosureKind, PolyTraitRef, Ty};
@@ -102,10 +102,11 @@ pub enum AdjustSignatureBorrow {
 }
 
 impl AddToDiagnostic for AdjustSignatureBorrow {
-    fn add_to_diagnostic_with<F>(self, diag: &mut Diagnostic, _: F)
-    where
-        F: Fn(&mut Diagnostic, SubdiagnosticMessage) -> SubdiagnosticMessage,
-    {
+    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagnosticMessageOp<G>>(
+        self,
+        diag: &mut DiagnosticBuilder<'_, G>,
+        _f: F,
+    ) {
         match self {
             AdjustSignatureBorrow::Borrow { to_borrow } => {
                 diag.arg("len", to_borrow.len());
@@ -138,6 +139,8 @@ pub struct ClosureKindMismatch {
     #[label(trait_selection_closure_kind_requirement)]
     pub cause_span: Span,
 
+    pub trait_prefix: &'static str,
+
     #[subdiagnostic]
     pub fn_once_label: Option<ClosureFnOnceLabel>,
 
@@ -159,4 +162,12 @@ pub struct ClosureFnMutLabel {
     #[primary_span]
     pub span: Span,
     pub place: String,
+}
+
+#[derive(Diagnostic)]
+#[diag(trait_selection_async_closure_not_fn)]
+pub(crate) struct AsyncClosureNotFn {
+    #[primary_span]
+    pub span: Span,
+    pub kind: &'static str,
 }

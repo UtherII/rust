@@ -117,8 +117,6 @@ impl Metrics {
             sh,
             "./target/release/rust-analyzer -q analysis-stats {path} --query-sysroot-metadata"
         )
-        // the sysroot uses `public-dependency`, so we make cargo think it's a nightly
-        .env("__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS", "nightly")
         .read()?;
         for (metric, value, unit) in parse_metrics(&output) {
             self.report(&format!("analysis-stats/{name}/{metric}"), value, unit.into());
@@ -194,12 +192,12 @@ impl Host {
             bail!("can only collect metrics on Linux ");
         }
 
-        let os = read_field(sh, "/etc/os-release", "PRETTY_NAME=")?.trim_matches('"').to_string();
+        let os = read_field(sh, "/etc/os-release", "PRETTY_NAME=")?.trim_matches('"').to_owned();
 
         let cpu = read_field(sh, "/proc/cpuinfo", "model name")?
             .trim_start_matches(':')
             .trim()
-            .to_string();
+            .to_owned();
 
         let mem = read_field(sh, "/proc/meminfo", "MemTotal:")?;
 
@@ -210,7 +208,7 @@ impl Host {
 
             text.lines()
                 .find_map(|it| it.strip_prefix(field))
-                .map(|it| it.trim().to_string())
+                .map(|it| it.trim().to_owned())
                 .ok_or_else(|| format_err!("can't parse {}", path))
         }
     }

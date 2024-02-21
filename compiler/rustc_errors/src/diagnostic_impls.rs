@@ -2,7 +2,7 @@ use crate::diagnostic::DiagnosticLocation;
 use crate::{fluent_generated as fluent, AddToDiagnostic};
 use crate::{
     DiagCtxt, DiagnosticArgValue, DiagnosticBuilder, EmissionGuarantee, ErrCode, IntoDiagnostic,
-    IntoDiagnosticArg, Level,
+    IntoDiagnosticArg, Level, SubdiagnosticMessageOp,
 };
 use rustc_ast as ast;
 use rustc_ast_pretty::pprust;
@@ -63,12 +63,8 @@ macro_rules! into_diagnostic_arg_for_number {
         $(
             impl IntoDiagnosticArg for $ty {
                 fn into_diagnostic_arg(self) -> DiagnosticArgValue {
-                    // HACK: `FluentNumber` the underline backing struct represent
-                    // numbers using a f64 which can't represent all the i128 numbers
-                    // So in order to be able to use fluent selectors and still
-                    // have all the numbers representable we only convert numbers
-                    // below a certain threshold.
-                    if let Ok(n) = TryInto::<i128>::try_into(self) && n >= -100 && n <= 100 {
+                    // Convert to a string if it won't fit into `Number`.
+                    if let Ok(n) = TryInto::<i32>::try_into(self) {
                         DiagnosticArgValue::Number(n)
                     } else {
                         self.to_string().into_diagnostic_arg()
@@ -83,7 +79,7 @@ into_diagnostic_arg_using_display!(
     ast::ParamKindOrd,
     std::io::Error,
     Box<dyn std::error::Error>,
-    std::num::NonZeroU32,
+    std::num::NonZero<u32>,
     hir::Target,
     Edition,
     Ident,
@@ -303,7 +299,11 @@ pub struct SingleLabelManySpans {
     pub label: &'static str,
 }
 impl AddToDiagnostic for SingleLabelManySpans {
-    fn add_to_diagnostic_with<F>(self, diag: &mut crate::Diagnostic, _: F) {
+    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagnosticMessageOp<G>>(
+        self,
+        diag: &mut DiagnosticBuilder<'_, G>,
+        _: F,
+    ) {
         diag.span_labels(self.spans, self.label);
     }
 }
@@ -314,23 +314,6 @@ pub struct ExpectedLifetimeParameter {
     #[primary_span]
     pub span: Span,
     pub count: usize,
-}
-
-#[derive(Subdiagnostic)]
-#[note(errors_delayed_at_with_newline)]
-pub struct DelayedAtWithNewline {
-    #[primary_span]
-    pub span: Span,
-    pub emitted_at: DiagnosticLocation,
-    pub note: Backtrace,
-}
-#[derive(Subdiagnostic)]
-#[note(errors_delayed_at_without_newline)]
-pub struct DelayedAtWithoutNewline {
-    #[primary_span]
-    pub span: Span,
-    pub emitted_at: DiagnosticLocation,
-    pub note: Backtrace,
 }
 
 impl IntoDiagnosticArg for DiagnosticLocation {
@@ -345,13 +328,6 @@ impl IntoDiagnosticArg for Backtrace {
     }
 }
 
-#[derive(Subdiagnostic)]
-#[note(errors_invalid_flushed_delayed_diagnostic_level)]
-pub struct InvalidFlushedDelayedDiagnosticLevel {
-    #[primary_span]
-    pub span: Span,
-    pub level: Level,
-}
 impl IntoDiagnosticArg for Level {
     fn into_diagnostic_arg(self) -> DiagnosticArgValue {
         DiagnosticArgValue::Str(Cow::from(self.to_string()))

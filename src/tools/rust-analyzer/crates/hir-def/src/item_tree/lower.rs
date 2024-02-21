@@ -2,18 +2,18 @@
 
 use std::collections::hash_map::Entry;
 
-use hir_expand::{ast_id_map::AstIdMap, span_map::SpanMapRef, HirFileId};
-use syntax::ast::{self, HasModuleItem, HasTypeBounds, IsString};
+use hir_expand::{ast_id_map::AstIdMap, span_map::SpanMapRef};
+use syntax::ast::{HasModuleItem, HasTypeBounds, IsString};
 
 use crate::{
-    generics::{GenericParams, GenericParamsCollector, TypeParamData, TypeParamProvenance},
-    type_ref::{LifetimeRef, TraitBoundModifier, TraitRef},
+    generics::{GenericParamsCollector, TypeParamData, TypeParamProvenance},
+    type_ref::{LifetimeRef, TraitBoundModifier},
     LocalLifetimeParamId, LocalTypeOrConstParamId,
 };
 
 use super::*;
 
-fn id<N: ItemTreeModItemNode>(index: Idx<N>) -> FileItemTreeId<N> {
+fn id<N: ItemTreeNode>(index: Idx<N>) -> FileItemTreeId<N> {
     FileItemTreeId(index)
 }
 
@@ -267,7 +267,7 @@ impl<'a> Ctx<'a> {
             if let Some(data) = self.lower_variant(&variant) {
                 let idx = self.data().variants.alloc(data);
                 self.add_attrs(
-                    FileItemTreeId(idx).into(),
+                    id(idx).into(),
                     RawAttrs::new(self.db.upcast(), &variant, self.span_map()),
                 );
             }
@@ -658,7 +658,7 @@ impl<'a> Ctx<'a> {
 
     fn lower_visibility(&mut self, item: &dyn ast::HasVisibility) -> RawVisibilityId {
         let vis =
-            RawVisibility::from_ast_with_span_map(self.db, item.visibility(), self.span_map());
+            RawVisibility::from_opt_ast_with_span_map(self.db, item.visibility(), self.span_map());
         self.data().vis.alloc(vis)
     }
 

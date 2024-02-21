@@ -60,8 +60,8 @@ use crate::traits::{
 
 use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use rustc_errors::{
-    codes::*, pluralize, struct_span_code_err, Applicability, DiagCtxt, Diagnostic,
-    DiagnosticBuilder, DiagnosticStyledString, ErrorGuaranteed, IntoDiagnosticArg,
+    codes::*, pluralize, struct_span_code_err, Applicability, DiagCtxt, DiagnosticBuilder,
+    DiagnosticStyledString, ErrorGuaranteed, IntoDiagnosticArg,
 };
 use rustc_hir as hir;
 use rustc_hir::def::DefKind;
@@ -71,6 +71,7 @@ use rustc_hir::lang_items::LangItem;
 use rustc_middle::dep_graph::DepContext;
 use rustc_middle::ty::print::{with_forced_trimmed_paths, PrintError};
 use rustc_middle::ty::relate::{self, RelateResult, TypeRelation};
+use rustc_middle::ty::ToPredicate;
 use rustc_middle::ty::{
     self, error::TypeError, IsSuggestable, List, Region, Ty, TyCtxt, TypeFoldable,
     TypeSuperVisitable, TypeVisitable, TypeVisitableExt,
@@ -131,20 +132,6 @@ pub struct TypeErrCtxt<'a, 'tcx> {
         Box<dyn Fn(Ty<'tcx>) -> Vec<(Ty<'tcx>, Vec<PredicateObligation<'tcx>>)> + 'a>,
 }
 
-impl Drop for TypeErrCtxt<'_, '_> {
-    fn drop(&mut self) {
-        if self.dcx().has_errors().is_some() {
-            // Ok, emitted an error.
-        } else {
-            // Didn't emit an error; maybe it was created but not yet emitted.
-            self.infcx
-                .tcx
-                .sess
-                .good_path_delayed_bug("used a `TypeErrCtxt` without raising an error or lint");
-        }
-    }
-}
-
 impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
     pub fn dcx(&self) -> &'tcx DiagCtxt {
         self.infcx.tcx.dcx()
@@ -168,7 +155,7 @@ impl<'tcx> Deref for TypeErrCtxt<'_, 'tcx> {
 
 pub(super) fn note_and_explain_region<'tcx>(
     tcx: TyCtxt<'tcx>,
-    err: &mut Diagnostic,
+    err: &mut DiagnosticBuilder<'_>,
     prefix: &str,
     region: ty::Region<'tcx>,
     suffix: &str,
@@ -193,7 +180,7 @@ pub(super) fn note_and_explain_region<'tcx>(
 
 fn explain_free_region<'tcx>(
     tcx: TyCtxt<'tcx>,
-    err: &mut Diagnostic,
+    err: &mut DiagnosticBuilder<'_>,
     prefix: &str,
     region: ty::Region<'tcx>,
     suffix: &str,
@@ -275,7 +262,7 @@ fn msg_span_from_named_region<'tcx>(
 }
 
 fn emit_msg_span(
-    err: &mut Diagnostic,
+    err: &mut DiagnosticBuilder<'_>,
     prefix: &str,
     description: String,
     span: Option<Span>,
@@ -291,7 +278,7 @@ fn emit_msg_span(
 }
 
 fn label_msg_span(
-    err: &mut Diagnostic,
+    err: &mut DiagnosticBuilder<'_>,
     prefix: &str,
     description: String,
     span: Option<Span>,
@@ -519,10 +506,12 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                         self.report_placeholder_failure(sup_origin, sub_r, sup_r).emit();
                     }
 
-                    RegionResolutionError::CannotNormalize(ty, origin) => {
+                    RegionResolutionError::CannotNormalize(clause, origin) => {
+                        let clause: ty::Clause<'tcx> =
+                            clause.map_bound(ty::ClauseKind::TypeOutlives).to_predicate(self.tcx);
                         self.tcx
                             .dcx()
-                            .struct_span_err(origin.span(), format!("cannot normalize `{ty}`"))
+                            .struct_span_err(origin.span(), format!("cannot normalize `{clause}`"))
                             .emit();
                     }
                 }
@@ -588,7 +577,11 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
     }
 
     /// Adds a note if the types come from similarly named crates
-    fn check_and_note_conflicting_crates(&self, err: &mut Diagnostic, terr: TypeError<'tcx>) {
+    fn check_and_note_conflicting_crates(
+        &self,
+        err: &mut DiagnosticBuilder<'_>,
+        terr: TypeError<'tcx>,
+    ) {
         use hir::def_id::CrateNum;
         use rustc_hir::definitions::DisambiguatedDefPathData;
         use ty::print::Printer;
@@ -662,7 +655,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
             }
         }
 
-        let report_path_match = |err: &mut Diagnostic, did1: DefId, did2: DefId| {
+        let report_path_match = |err: &mut DiagnosticBuilder<'_>, did1: DefId, did2: DefId| {
             // Only report definitions from different crates. If both definitions
             // are from a local module we could have false positives, e.g.
             // let _ = [{struct Foo; Foo}, {struct Foo; Foo}];
@@ -712,7 +705,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
 
     fn note_error_origin(
         &self,
-        err: &mut Diagnostic,
+        err: &mut DiagnosticBuilder<'_>,
         cause: &ObligationCause<'tcx>,
         exp_found: Option<ty::error::ExpectedFound<Ty<'tcx>>>,
         terr: TypeError<'tcx>,
@@ -788,10 +781,9 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                 prior_arm_span,
                 prior_arm_ty,
                 source,
-                ref prior_arms,
+                ref prior_non_diverging_arms,
                 opt_suggest_box_span,
                 scrut_span,
-                scrut_hir_id,
                 ..
             }) => match source {
                 hir::MatchSource::TryDesugar(scrut_hir_id) => {
@@ -828,12 +820,12 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                     });
                     let source_map = self.tcx.sess.source_map();
                     let mut any_multiline_arm = source_map.is_multiline(arm_span);
-                    if prior_arms.len() <= 4 {
-                        for sp in prior_arms {
+                    if prior_non_diverging_arms.len() <= 4 {
+                        for sp in prior_non_diverging_arms {
                             any_multiline_arm |= source_map.is_multiline(*sp);
                             err.span_label(*sp, format!("this is found to be of type `{t}`"));
                         }
-                    } else if let Some(sp) = prior_arms.last() {
+                    } else if let Some(sp) = prior_non_diverging_arms.last() {
                         any_multiline_arm |= source_map.is_multiline(*sp);
                         err.span_label(
                             *sp,
@@ -857,26 +849,17 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                         arm_ty,
                         arm_span,
                     ) {
-                        err.subdiagnostic(subdiag);
-                    }
-                    if let Some(hir::Node::Expr(m)) = self.tcx.hir().find_parent(scrut_hir_id)
-                        && let Some(hir::Node::Stmt(stmt)) = self.tcx.hir().find_parent(m.hir_id)
-                        && let hir::StmtKind::Expr(_) = stmt.kind
-                    {
-                        err.span_suggestion_verbose(
-                            stmt.span.shrink_to_hi(),
-                            "consider using a semicolon here, but this will discard any values \
-                             in the match arms",
-                            ";",
-                            Applicability::MaybeIncorrect,
-                        );
+                        err.subdiagnostic(self.dcx(), subdiag);
                     }
                     if let Some(ret_sp) = opt_suggest_box_span {
                         // Get return type span and point to it.
                         self.suggest_boxing_for_return_impl_trait(
                             err,
                             ret_sp,
-                            prior_arms.iter().chain(std::iter::once(&arm_span)).copied(),
+                            prior_non_diverging_arms
+                                .iter()
+                                .chain(std::iter::once(&arm_span))
+                                .copied(),
                         );
                     }
                 }
@@ -903,7 +886,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                     else_ty,
                     else_span,
                 ) {
-                    err.subdiagnostic(subdiag);
+                    err.subdiagnostic(self.dcx(), subdiag);
                 }
                 // don't suggest wrapping either blocks in `if .. {} else {}`
                 let is_empty_arm = |id| {
@@ -1556,7 +1539,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
     )]
     pub fn note_type_err(
         &self,
-        diag: &mut Diagnostic,
+        diag: &mut DiagnosticBuilder<'_>,
         cause: &ObligationCause<'tcx>,
         secondary_span: Option<(Span, Cow<'static, str>)>,
         mut values: Option<ValuePairs<'tcx>>,
@@ -1603,14 +1586,14 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                 types_visitor
             }
 
-            fn report(&self, err: &mut Diagnostic) {
+            fn report(&self, err: &mut DiagnosticBuilder<'_>) {
                 self.add_labels_for_types(err, "expected", &self.expected);
                 self.add_labels_for_types(err, "found", &self.found);
             }
 
             fn add_labels_for_types(
                 &self,
-                err: &mut Diagnostic,
+                err: &mut DiagnosticBuilder<'_>,
                 target: &str,
                 types: &FxIndexMap<TyCategory, FxIndexSet<Span>>,
             ) {
@@ -1824,7 +1807,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                         |prim: Ty<'tcx>,
                          shadow: Ty<'tcx>,
                          defid: DefId,
-                         diagnostic: &mut Diagnostic| {
+                         diagnostic: &mut DiagnosticBuilder<'_>| {
                             let name = shadow.sort_string(self.tcx);
                             diagnostic.note(format!(
                             "{prim} and {name} have similar names, but are actually distinct types"
@@ -1844,7 +1827,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                     let diagnose_adts =
                         |expected_adt: ty::AdtDef<'tcx>,
                          found_adt: ty::AdtDef<'tcx>,
-                         diagnostic: &mut Diagnostic| {
+                         diagnostic: &mut DiagnosticBuilder<'_>| {
                             let found_name = values.found.sort_string(self.tcx);
                             let expected_name = values.expected.sort_string(self.tcx);
 
@@ -1952,6 +1935,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                                         "the full type name has been written to '{}'",
                                         path.display(),
                                     ));
+                                    diag.note(format!("consider using `--verbose` to print the full type name to the console"));
                                 }
                             }
                         }
@@ -2179,8 +2163,8 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         if let Some(tykind) = tykind
             && let hir::TyKind::Array(_, length) = tykind
             && let hir::ArrayLen::Body(hir::AnonConst { hir_id, .. }) = length
-            && let Some(span) = self.tcx.hir().opt_span(*hir_id)
         {
+            let span = self.tcx.hir().span(*hir_id);
             Some(TypeErrorAdditionalDiags::ConsiderSpecifyingLength { span, length: sz.found })
         } else {
             None
@@ -2807,19 +2791,8 @@ pub enum FailureCode {
     Error0644,
 }
 
-pub trait ObligationCauseExt<'tcx> {
-    fn as_failure_code(&self, terr: TypeError<'tcx>) -> FailureCode;
-
-    fn as_failure_code_diag(
-        &self,
-        terr: TypeError<'tcx>,
-        span: Span,
-        subdiags: Vec<TypeErrorAdditionalDiags>,
-    ) -> ObligationCauseFailureCode;
-    fn as_requirement_str(&self) -> &'static str;
-}
-
-impl<'tcx> ObligationCauseExt<'tcx> for ObligationCause<'tcx> {
+#[extension(pub trait ObligationCauseExt<'tcx>)]
+impl<'tcx> ObligationCause<'tcx> {
     fn as_failure_code(&self, terr: TypeError<'tcx>) -> FailureCode {
         use self::FailureCode::*;
         use crate::traits::ObligationCauseCode::*;
@@ -2839,7 +2812,11 @@ impl<'tcx> ObligationCauseExt<'tcx> for ObligationCause<'tcx> {
             // say, also take a look at the error code, maybe we can
             // tailor to that.
             _ => match terr {
-                TypeError::CyclicTy(ty) if ty.is_closure() || ty.is_coroutine() => Error0644,
+                TypeError::CyclicTy(ty)
+                    if ty.is_closure() || ty.is_coroutine() || ty.is_coroutine_closure() =>
+                {
+                    Error0644
+                }
                 TypeError::IntrinsicCast => Error0308,
                 _ => Error0308,
             },
@@ -2886,7 +2863,9 @@ impl<'tcx> ObligationCauseExt<'tcx> for ObligationCause<'tcx> {
             // say, also take a look at the error code, maybe we can
             // tailor to that.
             _ => match terr {
-                TypeError::CyclicTy(ty) if ty.is_closure() || ty.is_coroutine() => {
+                TypeError::CyclicTy(ty)
+                    if ty.is_closure() || ty.is_coroutine() || ty.is_coroutine_closure() =>
+                {
                     ObligationCauseFailureCode::ClosureSelfref { span }
                 }
                 TypeError::IntrinsicCast => {

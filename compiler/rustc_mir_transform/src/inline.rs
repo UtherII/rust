@@ -2,6 +2,7 @@
 use crate::deref_separator::deref_finder;
 use rustc_attr::InlineAttr;
 use rustc_const_eval::transform::validate::validate_types;
+use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_index::bit_set::BitSet;
 use rustc_index::Idx;
@@ -317,6 +318,8 @@ impl<'tcx> Inliner<'tcx> {
             | InstanceDef::ReifyShim(_)
             | InstanceDef::FnPtrShim(..)
             | InstanceDef::ClosureOnceShim { .. }
+            | InstanceDef::ConstructCoroutineInClosureShim { .. }
+            | InstanceDef::CoroutineKindShim { .. }
             | InstanceDef::DropGlue(..)
             | InstanceDef::CloneShim(..)
             | InstanceDef::ThreadLocalShim(..)
@@ -382,6 +385,17 @@ impl<'tcx> Inliner<'tcx> {
                 }
 
                 let fn_sig = self.tcx.fn_sig(def_id).instantiate(self.tcx, args);
+
+                // Additionally, check that the body that we're inlining actually agrees
+                // with the ABI of the trait that the item comes from.
+                if let InstanceDef::Item(instance_def_id) = callee.def
+                    && self.tcx.def_kind(instance_def_id) == DefKind::AssocFn
+                    && let instance_fn_sig = self.tcx.fn_sig(instance_def_id).skip_binder()
+                    && instance_fn_sig.abi() != fn_sig.abi()
+                {
+                    return None;
+                }
+
                 let source_info = SourceInfo { span: fn_span, ..terminator.source_info };
 
                 return Some(CallSite { callee, fn_sig, block: bb, source_info });
@@ -1025,21 +1039,16 @@ fn try_instance_mir<'tcx>(
     tcx: TyCtxt<'tcx>,
     instance: InstanceDef<'tcx>,
 ) -> Result<&'tcx Body<'tcx>, &'static str> {
-    match instance {
-        ty::InstanceDef::DropGlue(_, Some(ty)) => match ty.kind() {
-            ty::Adt(def, args) => {
-                let fields = def.all_fields();
-                for field in fields {
-                    let field_ty = field.ty(tcx, args);
-                    if field_ty.has_param() && field_ty.has_projections() {
-                        return Err("cannot build drop shim for polymorphic type");
-                    }
-                }
-
-                Ok(tcx.instance_mir(instance))
+    if let ty::InstanceDef::DropGlue(_, Some(ty)) = instance
+        && let ty::Adt(def, args) = ty.kind()
+    {
+        let fields = def.all_fields();
+        for field in fields {
+            let field_ty = field.ty(tcx, args);
+            if field_ty.has_param() && field_ty.has_projections() {
+                return Err("cannot build drop shim for polymorphic type");
             }
-            _ => Ok(tcx.instance_mir(instance)),
-        },
-        _ => Ok(tcx.instance_mir(instance)),
+        }
     }
+    Ok(tcx.instance_mir(instance))
 }

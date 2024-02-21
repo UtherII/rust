@@ -1,8 +1,8 @@
 // check-fail
 // Tests error conditions for specifying diagnostics using #[derive(Diagnostic)]
-
 // normalize-stderr-test "the following other types implement trait `IntoDiagnosticArg`:(?:.*\n){0,9}\s+and \d+ others" -> "normalized in stderr"
-// normalize-stderr-test "diagnostic_builder\.rs:[0-9]+:[0-9]+" -> "diagnostic_builder.rs:LL:CC"
+// normalize-stderr-test "(COMPILER_DIR/.*\.rs):[0-9]+:[0-9]+" -> "$1:LL:CC"
+
 // The proc_macro2 crate handles spans differently when on beta/stable release rather than nightly,
 // changing the output of this test. Since Diagnostic is strictly internal to the compiler
 // the test is just ignored on stable and beta:
@@ -701,7 +701,7 @@ struct RawIdentDiagnosticArg {
 #[diag(no_crate_example)]
 struct SubdiagnosticBad {
     #[subdiagnostic(bad)]
-    //~^ ERROR `eager` is the only supported nested attribute for `subdiagnostic`
+    //~^ ERROR `#[subdiagnostic(...)]` is not a valid attribute
     note: Note,
 }
 
@@ -717,7 +717,7 @@ struct SubdiagnosticBadStr {
 #[diag(no_crate_example)]
 struct SubdiagnosticBadTwice {
     #[subdiagnostic(bad, bad)]
-    //~^ ERROR `eager` is the only supported nested attribute for `subdiagnostic`
+    //~^ ERROR `#[subdiagnostic(...)]` is not a valid attribute
     note: Note,
 }
 
@@ -725,7 +725,7 @@ struct SubdiagnosticBadTwice {
 #[diag(no_crate_example)]
 struct SubdiagnosticBadLitStr {
     #[subdiagnostic("bad")]
-    //~^ ERROR `eager` is the only supported nested attribute for `subdiagnostic`
+    //~^ ERROR `#[subdiagnostic(...)]` is not a valid attribute
     note: Note,
 }
 
@@ -739,8 +739,9 @@ struct SubdiagnosticEagerLint {
 
 #[derive(Diagnostic)]
 #[diag(no_crate_example)]
-struct SubdiagnosticEagerCorrect {
+struct SubdiagnosticEagerFormerlyCorrect {
     #[subdiagnostic(eager)]
+    //~^ ERROR `#[subdiagnostic(...)]` is not a valid attribute
     note: Note,
 }
 
@@ -761,6 +762,7 @@ pub(crate) struct SubdiagnosticWithSuggestion {
 #[diag(no_crate_example)]
 struct SubdiagnosticEagerSuggestion {
     #[subdiagnostic(eager)]
+    //~^ ERROR `#[subdiagnostic(...)]` is not a valid attribute
     sub: SubdiagnosticWithSuggestion,
 }
 

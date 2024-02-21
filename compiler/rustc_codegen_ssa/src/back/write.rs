@@ -39,7 +39,6 @@ use rustc_target::spec::{MergeFunctions, SanitizerSet};
 
 use crate::errors::ErrorCreatingRemarkDir;
 use std::any::Any;
-use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::marker::PhantomData;
@@ -914,7 +913,9 @@ fn execute_copy_from_cache_work_item<B: ExtraBackendMethods>(
 
     let object = load_from_incr_comp_dir(
         cgcx.output_filenames.temp_path(OutputType::Object, Some(&module.name)),
-        module.source.saved_files.get("o").expect("no saved object file in work product"),
+        module.source.saved_files.get("o").unwrap_or_else(|| {
+            cgcx.create_dcx().emit_fatal(errors::NoSavedObjectFile { cgu_name: &module.name })
+        }),
     );
     let dwarf_object =
         module.source.saved_files.get("dwo").as_ref().and_then(|saved_dwarf_object_file| {
@@ -1000,7 +1001,7 @@ pub struct CguMessage;
 
 struct Diagnostic {
     msgs: Vec<(DiagnosticMessage, Style)>,
-    args: FxHashMap<DiagnosticArgName, DiagnosticArgValue>,
+    args: FxIndexMap<DiagnosticArgName, DiagnosticArgValue>,
     code: Option<ErrCode>,
     lvl: Level,
 }
@@ -1811,13 +1812,13 @@ impl Translate for SharedEmitter {
 }
 
 impl Emitter for SharedEmitter {
-    fn emit_diagnostic(&mut self, diag: &rustc_errors::Diagnostic) {
-        let args: FxHashMap<Cow<'_, str>, DiagnosticArgValue> =
+    fn emit_diagnostic(&mut self, diag: rustc_errors::Diagnostic) {
+        let args: FxIndexMap<DiagnosticArgName, DiagnosticArgValue> =
             diag.args().map(|(name, arg)| (name.clone(), arg.clone())).collect();
         drop(self.sender.send(SharedEmitterMessage::Diagnostic(Diagnostic {
             msgs: diag.messages.clone(),
             args: args.clone(),
-            code: diag.code.clone(),
+            code: diag.code,
             lvl: diag.level(),
         })));
         for child in &diag.children {
@@ -1855,9 +1856,7 @@ impl SharedEmitterMain {
                 Ok(SharedEmitterMessage::Diagnostic(diag)) => {
                     let dcx = sess.dcx();
                     let mut d = rustc_errors::Diagnostic::new_with_messages(diag.lvl, diag.msgs);
-                    if let Some(code) = diag.code {
-                        d.code(code);
-                    }
+                    d.code = diag.code; // may be `None`, that's ok
                     d.replace_args(diag.args);
                     dcx.emit_diagnostic(d);
                 }

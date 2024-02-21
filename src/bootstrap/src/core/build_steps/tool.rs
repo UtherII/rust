@@ -5,6 +5,7 @@ use std::process::Command;
 
 use crate::core::build_steps::compile;
 use crate::core::build_steps::toolstate::ToolState;
+use crate::core::builder;
 use crate::core::builder::{Builder, Cargo as CargoCommand, RunConfig, ShouldRun, Step};
 use crate::core::config::TargetSelection;
 use crate::utils::channel::GitInfo;
@@ -142,7 +143,8 @@ pub fn prepare_tool_cargo(
     source_type: SourceType,
     extra_features: &[String],
 ) -> CargoCommand {
-    let mut cargo = builder.cargo(compiler, mode, source_type, target, command);
+    let mut cargo = builder::Cargo::new(builder, compiler, mode, source_type, target, command);
+
     let dir = builder.src.join(path);
     cargo.arg("--manifest-path").arg(dir.join("Cargo.toml"));
 
@@ -817,7 +819,7 @@ impl<'a> Builder<'a> {
         if compiler.host.is_msvc() {
             let curpaths = env::var_os("PATH").unwrap_or_default();
             let curpaths = env::split_paths(&curpaths).collect::<Vec<_>>();
-            for &(ref k, ref v) in self.cc.borrow()[&compiler.host].env() {
+            for (k, v) in self.cc.borrow()[&compiler.host].env() {
                 if k != "PATH" {
                     continue;
                 }

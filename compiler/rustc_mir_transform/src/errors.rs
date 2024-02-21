@@ -87,6 +87,9 @@ pub(crate) struct RequiresUnsafeDetail {
 }
 
 impl RequiresUnsafeDetail {
+    // FIXME: make this translatable
+    #[allow(rustc::diagnostic_outside_of_impl)]
+    #[allow(rustc::untranslatable_diagnostic)]
     fn add_subdiagnostics<G: EmissionGuarantee>(&self, diag: &mut DiagnosticBuilder<'_, G>) {
         use UnsafetyViolationDetails::*;
         match self.violation {
@@ -270,7 +273,7 @@ impl<'a> DecorateLint<'a, ()> for MustNotSupend<'_, '_> {
     fn decorate_lint<'b>(self, diag: &'b mut rustc_errors::DiagnosticBuilder<'a, ()>) {
         diag.span_label(self.yield_sp, fluent::_subdiag::label);
         if let Some(reason) = self.reason {
-            diag.subdiagnostic(reason);
+            diag.subdiagnostic(diag.dcx, reason);
         }
         diag.span_help(self.src_sp, fluent::_subdiag::help);
         diag.arg("pre", self.pre);

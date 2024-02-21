@@ -1,9 +1,7 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 //! Error reporting machinery for lifetime errors.
 
 use rustc_data_structures::fx::FxIndexSet;
-use rustc_errors::{Applicability, Diagnostic, DiagnosticBuilder, MultiSpan};
+use rustc_errors::{Applicability, DiagnosticBuilder, MultiSpan};
 use rustc_hir as hir;
 use rustc_hir::def::Res::Def;
 use rustc_hir::def_id::DefId;
@@ -216,7 +214,11 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 if let Some(id) = placeholder.bound.kind.get_id()
                     && let Some(placeholder_id) = id.as_local()
                     && let gat_hir_id = self.infcx.tcx.local_def_id_to_hir_id(placeholder_id)
-                    && let Some(generics_impl) = hir.get_parent(gat_hir_id).generics()
+                    && let Some(generics_impl) = self
+                        .infcx
+                        .tcx
+                        .parent_hir_node(self.infcx.tcx.parent_hir_id(gat_hir_id))
+                        .generics()
                 {
                     Some((gat_hir_id, generics_impl))
                 } else {
@@ -249,6 +251,9 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
 
         hrtb_bounds.iter().for_each(|bound| {
             let Trait(PolyTraitRef { trait_ref, span: trait_span, .. }, _) = bound else { return; };
+            // FIXME: make this translatable
+            #[allow(rustc::diagnostic_outside_of_impl)]
+            #[allow(rustc::untranslatable_diagnostic)]
             diag.span_note(
                 *trait_span,
                 "due to current limitations in the borrow checker, this implies a `'static` lifetime"
@@ -419,6 +424,9 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
     /// ```
     ///
     /// Here we would be invoked with `fr = 'a` and `outlived_fr = 'b`.
+    // FIXME: make this translatable
+    #[allow(rustc::diagnostic_outside_of_impl)]
+    #[allow(rustc::untranslatable_diagnostic)]
     pub(crate) fn report_region_error(
         &mut self,
         fr: RegionVid,
@@ -614,13 +622,13 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 let upvars_map = self.infcx.tcx.upvars_mentioned(def_id).unwrap();
                 let upvar_def_span = self.infcx.tcx.hir().span(def_hir);
                 let upvar_span = upvars_map.get(&def_hir).unwrap().span;
-                diag.subdiagnostic(VarHereDenote::Defined { span: upvar_def_span });
-                diag.subdiagnostic(VarHereDenote::Captured { span: upvar_span });
+                diag.subdiagnostic(self.dcx(), VarHereDenote::Defined { span: upvar_def_span });
+                diag.subdiagnostic(self.dcx(), VarHereDenote::Captured { span: upvar_span });
             }
         }
 
         if let Some(fr_span) = self.give_region_a_name(*outlived_fr).unwrap().span() {
-            diag.subdiagnostic(VarHereDenote::FnMutInferred { span: fr_span });
+            diag.subdiagnostic(self.dcx(), VarHereDenote::FnMutInferred { span: fr_span });
         }
 
         self.suggest_move_on_borrowing_closure(&mut diag);
@@ -683,12 +691,18 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
             borrowck_errors::borrowed_data_escapes_closure(self.infcx.tcx, *span, escapes_from);
 
         if let Some((Some(outlived_fr_name), outlived_fr_span)) = outlived_fr_name_and_span {
+            // FIXME: make this translatable
+            #[allow(rustc::diagnostic_outside_of_impl)]
+            #[allow(rustc::untranslatable_diagnostic)]
             diag.span_label(
                 outlived_fr_span,
                 format!("`{outlived_fr_name}` declared here, outside of the {escapes_from} body",),
             );
         }
 
+        // FIXME: make this translatable
+        #[allow(rustc::diagnostic_outside_of_impl)]
+        #[allow(rustc::untranslatable_diagnostic)]
         if let Some((Some(fr_name), fr_span)) = fr_name_and_span {
             diag.span_label(
                 fr_span,
@@ -712,6 +726,9 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 let outlived_fr_region_name = self.give_region_a_name(errci.outlived_fr).unwrap();
                 outlived_fr_region_name.highlight_region_name(&mut diag);
 
+                // FIXME: make this translatable
+                #[allow(rustc::diagnostic_outside_of_impl)]
+                #[allow(rustc::untranslatable_diagnostic)]
                 diag.span_label(
                     *span,
                     format!(
@@ -786,7 +803,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
             },
         };
 
-        diag.subdiagnostic(err_category);
+        diag.subdiagnostic(self.dcx(), err_category);
 
         self.add_static_impl_trait_suggestion(&mut diag, *fr, fr_name, *outlived_fr);
         self.suggest_adding_lifetime_params(&mut diag, *fr, *outlived_fr);
@@ -806,7 +823,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
     /// ```
     fn add_static_impl_trait_suggestion(
         &self,
-        diag: &mut Diagnostic,
+        diag: &mut DiagnosticBuilder<'_>,
         fr: RegionVid,
         // We need to pass `fr_name` - computing it again will label it twice.
         fr_name: RegionName,
@@ -895,7 +912,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
 
     fn maybe_suggest_constrain_dyn_trait_impl(
         &self,
-        diag: &mut Diagnostic,
+        diag: &mut DiagnosticBuilder<'_>,
         f: Region<'tcx>,
         o: Region<'tcx>,
         category: &ConstraintCategory<'tcx>,
@@ -957,7 +974,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
     #[instrument(skip(self, err), level = "debug")]
     fn suggest_constrain_dyn_trait_in_impl(
         &self,
-        err: &mut Diagnostic,
+        err: &mut DiagnosticBuilder<'_>,
         found_dids: &FxIndexSet<DefId>,
         ident: Ident,
         self_ty: &hir::Ty<'_>,
@@ -977,7 +994,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                     ident.span,
                     "calling this method introduces the `impl`'s `'static` requirement",
                 );
-                err.subdiagnostic(RequireStaticErr::UsedImpl { multi_span });
+                err.subdiagnostic(self.dcx(), RequireStaticErr::UsedImpl { multi_span });
                 err.span_suggestion_verbose(
                     span.shrink_to_hi(),
                     "consider relaxing the implicit `'static` requirement",
@@ -992,7 +1009,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
 
     fn suggest_adding_lifetime_params(
         &self,
-        diag: &mut Diagnostic,
+        diag: &mut DiagnosticBuilder<'_>,
         sub: RegionVid,
         sup: RegionVid,
     ) {
@@ -1021,7 +1038,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         suggest_adding_lifetime_params(self.infcx.tcx, sub, ty_sup, ty_sub, diag);
     }
 
-    fn suggest_move_on_borrowing_closure(&self, diag: &mut Diagnostic) {
+    fn suggest_move_on_borrowing_closure(&self, diag: &mut DiagnosticBuilder<'_>) {
         let map = self.infcx.tcx.hir();
         let body_id = map.body_owned_by(self.mir_def_id());
         let expr = &map.body(body_id).value.peel_blocks();

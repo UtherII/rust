@@ -17,7 +17,7 @@ use hir_def::{
 use hir_expand::name::name;
 
 use crate::{
-    db::HirDatabase,
+    db::{HirDatabase, InternedCoroutine},
     display::HirDisplay,
     from_assoc_type_id, from_chalk_trait_id, from_foreign_def_id, make_binders,
     make_single_type_binders,
@@ -428,7 +428,7 @@ impl chalk_solve::RustIrDatabase<Interner> for ChalkContext<'_> {
         &self,
         id: chalk_ir::CoroutineId<Interner>,
     ) -> Arc<chalk_solve::rust_ir::CoroutineDatum<Interner>> {
-        let (parent, expr) = self.db.lookup_intern_coroutine(id.into());
+        let InternedCoroutine(parent, expr) = self.db.lookup_intern_coroutine(id.into());
 
         // We fill substitution with unknown type, because we only need to know whether the generic
         // params are types or consts to build `Binders` and those being filled up are for
@@ -473,7 +473,7 @@ impl chalk_solve::RustIrDatabase<Interner> for ChalkContext<'_> {
         let inner_types =
             rust_ir::CoroutineWitnessExistential { types: wrap_empty_binders(vec![]) };
 
-        let (parent, _) = self.db.lookup_intern_coroutine(id.into());
+        let InternedCoroutine(parent, _) = self.db.lookup_intern_coroutine(id.into());
         // See the comment in `coroutine_datum()` for unknown types.
         let subst = TyBuilder::subst_for_coroutine(self.db, parent).fill_with_unknown().build();
         let it = subst
@@ -689,7 +689,7 @@ pub(crate) fn impl_datum_query(
     krate: CrateId,
     impl_id: ImplId,
 ) -> Arc<ImplDatum> {
-    let _p = profile::span("impl_datum");
+    let _p = tracing::span!(tracing::Level::INFO, "impl_datum").entered();
     debug!("impl_datum {:?}", impl_id);
     let impl_: hir_def::ImplId = from_chalk(db, impl_id);
     impl_def_datum(db, krate, impl_id, impl_)

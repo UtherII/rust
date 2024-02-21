@@ -11,11 +11,12 @@ use crate::lint::{
 };
 use crate::Session;
 use rustc_ast::node_id::NodeId;
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::{FxHashMap, FxIndexMap, FxIndexSet};
 use rustc_data_structures::sync::{AppendOnlyVec, Lock, Lrc};
 use rustc_errors::{emitter::SilentEmitter, DiagCtxt};
 use rustc_errors::{
-    fallback_fluent_bundle, Diagnostic, DiagnosticBuilder, DiagnosticMessage, MultiSpan, StashKey,
+    fallback_fluent_bundle, DiagnosticBuilder, DiagnosticMessage, EmissionGuarantee, MultiSpan,
+    StashKey,
 };
 use rustc_feature::{find_feature_issue, GateIssue, UnstableFeatures};
 use rustc_span::edition::Edition;
@@ -156,7 +157,11 @@ pub fn feature_warn_issue(
 }
 
 /// Adds the diagnostics for a feature to an existing error.
-pub fn add_feature_diagnostics(err: &mut Diagnostic, sess: &Session, feature: Symbol) {
+pub fn add_feature_diagnostics<G: EmissionGuarantee>(
+    err: &mut DiagnosticBuilder<'_, G>,
+    sess: &Session,
+    feature: Symbol,
+) {
     add_feature_diagnostics_for_issue(err, sess, feature, GateIssue::Language, false);
 }
 
@@ -165,29 +170,29 @@ pub fn add_feature_diagnostics(err: &mut Diagnostic, sess: &Session, feature: Sy
 /// This variant allows you to control whether it is a library or language feature.
 /// Almost always, you want to use this for a language feature. If so, prefer
 /// `add_feature_diagnostics`.
-pub fn add_feature_diagnostics_for_issue(
-    err: &mut Diagnostic,
+pub fn add_feature_diagnostics_for_issue<G: EmissionGuarantee>(
+    err: &mut DiagnosticBuilder<'_, G>,
     sess: &Session,
     feature: Symbol,
     issue: GateIssue,
     feature_from_cli: bool,
 ) {
     if let Some(n) = find_feature_issue(feature, issue) {
-        err.subdiagnostic(FeatureDiagnosticForIssue { n });
+        err.subdiagnostic(sess.dcx(), FeatureDiagnosticForIssue { n });
     }
 
     // #23973: do not suggest `#![feature(...)]` if we are in beta/stable
     if sess.parse_sess.unstable_features.is_nightly_build() {
         if feature_from_cli {
-            err.subdiagnostic(CliFeatureDiagnosticHelp { feature });
+            err.subdiagnostic(sess.dcx(), CliFeatureDiagnosticHelp { feature });
         } else {
-            err.subdiagnostic(FeatureDiagnosticHelp { feature });
+            err.subdiagnostic(sess.dcx(), FeatureDiagnosticHelp { feature });
         }
 
         if sess.opts.unstable_opts.ui_testing {
-            err.subdiagnostic(SuggestUpgradeCompiler::ui_testing());
+            err.subdiagnostic(sess.dcx(), SuggestUpgradeCompiler::ui_testing());
         } else if let Some(suggestion) = SuggestUpgradeCompiler::new() {
-            err.subdiagnostic(suggestion);
+            err.subdiagnostic(sess.dcx(), suggestion);
         }
     }
 }
@@ -205,19 +210,19 @@ pub struct ParseSess {
     /// Places where identifiers that contain invalid Unicode codepoints but that look like they
     /// should be. Useful to avoid bad tokenization when encountering emoji. We group them to
     /// provide a single error per unique incorrect identifier.
-    pub bad_unicode_identifiers: Lock<FxHashMap<Symbol, Vec<Span>>>,
+    pub bad_unicode_identifiers: Lock<FxIndexMap<Symbol, Vec<Span>>>,
     source_map: Lrc<SourceMap>,
     pub buffered_lints: Lock<Vec<BufferedEarlyLint>>,
     /// Contains the spans of block expressions that could have been incomplete based on the
     /// operation token that followed it, but that the parser cannot identify without further
     /// analysis.
-    pub ambiguous_block_expr_parse: Lock<FxHashMap<Span, Span>>,
+    pub ambiguous_block_expr_parse: Lock<FxIndexMap<Span, Span>>,
     pub gated_spans: GatedSpans,
     pub symbol_gallery: SymbolGallery,
     /// Environment variables accessed during the build and their values when they exist.
-    pub env_depinfo: Lock<FxHashSet<(Symbol, Option<Symbol>)>>,
+    pub env_depinfo: Lock<FxIndexSet<(Symbol, Option<Symbol>)>>,
     /// File paths accessed during the build.
-    pub file_depinfo: Lock<FxHashSet<Symbol>>,
+    pub file_depinfo: Lock<FxIndexSet<Symbol>>,
     /// Whether cfg(version) should treat the current release as incomplete
     pub assume_incomplete_release: bool,
     /// Spans passed to `proc_macro::quote_span`. Each span has a numerical
@@ -247,7 +252,7 @@ impl ParseSess {
             bad_unicode_identifiers: Lock::new(Default::default()),
             source_map,
             buffered_lints: Lock::new(vec![]),
-            ambiguous_block_expr_parse: Lock::new(FxHashMap::default()),
+            ambiguous_block_expr_parse: Lock::new(Default::default()),
             gated_spans: GatedSpans::default(),
             symbol_gallery: SymbolGallery::default(),
             env_depinfo: Default::default(),
@@ -258,7 +263,7 @@ impl ParseSess {
         }
     }
 
-    pub fn with_silent_emitter(fatal_note: Option<String>) -> Self {
+    pub fn with_silent_emitter(fatal_note: String) -> Self {
         let fallback_bundle = fallback_fluent_bundle(Vec::new(), false);
         let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
         let fatal_dcx = DiagCtxt::with_tty_emitter(None, fallback_bundle).disable_warnings();

@@ -143,6 +143,7 @@ pub struct WrongNumberOfGenericArgumentsToIntrinsic<'a> {
 
 #[derive(Diagnostic)]
 #[diag(hir_analysis_unrecognized_intrinsic_function, code = E0093)]
+#[help]
 pub struct UnrecognizedIntrinsicFunction {
     #[primary_span]
     #[label]
@@ -167,17 +168,6 @@ pub struct LifetimesOrBoundsMismatchOnTrait {
 }
 
 #[derive(Diagnostic)]
-#[diag(hir_analysis_async_trait_impl_should_be_async)]
-pub struct AsyncTraitImplShouldBeAsync {
-    #[primary_span]
-    // #[label]
-    pub span: Span,
-    #[label(hir_analysis_trait_item_label)]
-    pub trait_item_span: Option<Span>,
-    pub method_name: Symbol,
-}
-
-#[derive(Diagnostic)]
 #[diag(hir_analysis_drop_impl_on_wrong_item, code = E0120)]
 pub struct DropImplOnWrongItem {
     #[primary_span]
@@ -186,14 +176,66 @@ pub struct DropImplOnWrongItem {
 }
 
 #[derive(Diagnostic)]
-#[diag(hir_analysis_field_already_declared, code = E0124)]
-pub struct FieldAlreadyDeclared {
-    pub field_name: Ident,
+pub enum FieldAlreadyDeclared {
+    #[diag(hir_analysis_field_already_declared, code = E0124)]
+    NotNested {
+        field_name: Symbol,
+        #[primary_span]
+        #[label]
+        span: Span,
+        #[label(hir_analysis_previous_decl_label)]
+        prev_span: Span,
+    },
+    #[diag(hir_analysis_field_already_declared_current_nested)]
+    CurrentNested {
+        field_name: Symbol,
+        #[primary_span]
+        #[label]
+        span: Span,
+        #[note(hir_analysis_nested_field_decl_note)]
+        nested_field_span: Span,
+        #[subdiagnostic]
+        help: FieldAlreadyDeclaredNestedHelp,
+        #[label(hir_analysis_previous_decl_label)]
+        prev_span: Span,
+    },
+    #[diag(hir_analysis_field_already_declared_previous_nested)]
+    PreviousNested {
+        field_name: Symbol,
+        #[primary_span]
+        #[label]
+        span: Span,
+        #[label(hir_analysis_previous_decl_label)]
+        prev_span: Span,
+        #[note(hir_analysis_previous_nested_field_decl_note)]
+        prev_nested_field_span: Span,
+        #[subdiagnostic]
+        prev_help: FieldAlreadyDeclaredNestedHelp,
+    },
+    #[diag(hir_analysis_field_already_declared_both_nested)]
+    BothNested {
+        field_name: Symbol,
+        #[primary_span]
+        #[label]
+        span: Span,
+        #[note(hir_analysis_nested_field_decl_note)]
+        nested_field_span: Span,
+        #[subdiagnostic]
+        help: FieldAlreadyDeclaredNestedHelp,
+        #[label(hir_analysis_previous_decl_label)]
+        prev_span: Span,
+        #[note(hir_analysis_previous_nested_field_decl_note)]
+        prev_nested_field_span: Span,
+        #[subdiagnostic]
+        prev_help: FieldAlreadyDeclaredNestedHelp,
+    },
+}
+
+#[derive(Subdiagnostic)]
+#[help(hir_analysis_field_already_declared_nested_help)]
+pub struct FieldAlreadyDeclaredNestedHelp {
     #[primary_span]
-    #[label]
     pub span: Span,
-    #[label(hir_analysis_previous_decl_label)]
-    pub prev_span: Span,
 }
 
 #[derive(Diagnostic)]
@@ -383,8 +425,8 @@ pub struct ManualImplementation {
 }
 
 #[derive(Diagnostic)]
-#[diag(hir_analysis_substs_on_overridden_impl)]
-pub struct SubstsOnOverriddenImpl {
+#[diag(hir_analysis_generic_args_on_overridden_impl)]
+pub struct GenericArgsOnOverriddenImpl {
     #[primary_span]
     pub span: Span,
 }
@@ -618,6 +660,13 @@ pub(crate) struct InvalidUnionField {
     pub sugg: InvalidUnionFieldSuggestion,
     #[note]
     pub note: (),
+}
+
+#[derive(Diagnostic)]
+#[diag(hir_analysis_invalid_unnamed_field_ty)]
+pub struct InvalidUnnamedFieldTy {
+    #[primary_span]
+    pub span: Span,
 }
 
 #[derive(Diagnostic)]
@@ -1414,12 +1463,13 @@ pub struct OnlyCurrentTraitsPointerSugg<'a> {
 #[derive(Diagnostic)]
 #[diag(hir_analysis_static_mut_ref, code = E0796)]
 #[note]
-pub struct StaticMutRef {
+pub struct StaticMutRef<'a> {
     #[primary_span]
     #[label]
     pub span: Span,
     #[subdiagnostic]
     pub sugg: StaticMutRefSugg,
+    pub shared: &'a str,
 }
 
 #[derive(Subdiagnostic)]
@@ -1450,30 +1500,15 @@ pub enum StaticMutRefSugg {
 
 // STATIC_MUT_REF lint
 #[derive(LintDiagnostic)]
-#[diag(hir_analysis_static_mut_ref_lint)]
+#[diag(hir_analysis_static_mut_refs_lint)]
 #[note]
+#[note(hir_analysis_why_note)]
 pub struct RefOfMutStatic<'a> {
-    pub shared: &'a str,
-    #[note(hir_analysis_why_note)]
-    pub why_note: (),
-    #[subdiagnostic]
-    pub label: RefOfMutStaticLabel,
+    #[label]
+    pub span: Span,
     #[subdiagnostic]
     pub sugg: RefOfMutStaticSugg,
-}
-
-#[derive(Subdiagnostic)]
-pub enum RefOfMutStaticLabel {
-    #[label(hir_analysis_label)]
-    Shared {
-        #[primary_span]
-        span: Span,
-    },
-    #[label(hir_analysis_label_mut)]
-    Mut {
-        #[primary_span]
-        span: Span,
-    },
+    pub shared: &'a str,
 }
 
 #[derive(Subdiagnostic)]
@@ -1510,4 +1545,73 @@ pub struct NotSupportedDelegation<'a> {
     pub descr: &'a str,
     #[label]
     pub callee_span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(hir_analysis_method_should_return_future)]
+pub struct MethodShouldReturnFuture {
+    #[primary_span]
+    pub span: Span,
+    pub method_name: Symbol,
+    #[note]
+    pub trait_item_span: Option<Span>,
+}
+
+#[derive(Diagnostic)]
+#[diag(hir_analysis_unused_generic_parameter)]
+pub(crate) struct UnusedGenericParameter {
+    #[primary_span]
+    #[label]
+    pub span: Span,
+    pub param_name: Ident,
+    pub param_def_kind: &'static str,
+    #[subdiagnostic]
+    pub help: UnusedGenericParameterHelp,
+    #[help(hir_analysis_const_param_help)]
+    pub const_param_help: Option<()>,
+}
+
+#[derive(Subdiagnostic)]
+pub(crate) enum UnusedGenericParameterHelp {
+    #[help(hir_analysis_unused_generic_parameter_adt_help)]
+    Adt { param_name: Ident, phantom_data: String },
+    #[help(hir_analysis_unused_generic_parameter_adt_no_phantom_data_help)]
+    AdtNoPhantomData { param_name: Ident },
+    #[help(hir_analysis_unused_generic_parameter_ty_alias_help)]
+    TyAlias { param_name: Ident },
+}
+
+#[derive(Diagnostic)]
+pub enum UnnamedFieldsRepr<'a> {
+    #[diag(hir_analysis_unnamed_fields_repr_missing_repr_c)]
+    MissingReprC {
+        #[primary_span]
+        #[label]
+        span: Span,
+        adt_kind: &'static str,
+        adt_name: Symbol,
+        #[subdiagnostic]
+        unnamed_fields: Vec<UnnamedFieldsReprFieldDefined>,
+        #[suggestion(code = "#[repr(C)]\n")]
+        sugg_span: Span,
+    },
+    #[diag(hir_analysis_unnamed_fields_repr_field_missing_repr_c)]
+    FieldMissingReprC {
+        #[primary_span]
+        #[label]
+        span: Span,
+        #[label(hir_analysis_field_ty_label)]
+        field_ty_span: Span,
+        field_ty: Ty<'a>,
+        field_adt_kind: &'static str,
+        #[suggestion(code = "#[repr(C)]\n")]
+        sugg_span: Span,
+    },
+}
+
+#[derive(Subdiagnostic)]
+#[note(hir_analysis_unnamed_fields_repr_field_defined)]
+pub struct UnnamedFieldsReprFieldDefined {
+    #[primary_span]
+    pub span: Span,
 }

@@ -106,6 +106,7 @@
 #![feature(array_windows)]
 #![feature(ascii_char)]
 #![feature(assert_matches)]
+#![feature(async_fn_traits)]
 #![feature(async_iterator)]
 #![feature(coerce_unsized)]
 #![feature(const_align_of_val)]
@@ -127,6 +128,7 @@
 #![feature(extend_one)]
 #![feature(fmt_internals)]
 #![feature(fn_traits)]
+#![feature(generic_nonzero)]
 #![feature(hasher_prefixfree_extras)]
 #![feature(hint_assert_unchecked)]
 #![feature(inline_const)]
@@ -135,6 +137,7 @@
 #![feature(iter_next_chunk)]
 #![feature(iter_repeat_n)]
 #![feature(layout_for_ptr)]
+#![feature(local_waker)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_uninit_array_transpose)]
@@ -252,7 +255,7 @@ pub mod str;
 pub mod string;
 #[cfg(all(not(no_rc), not(no_sync), target_has_atomic = "ptr"))]
 pub mod sync;
-#[cfg(all(not(no_global_oom_handling), not(no_rc), not(no_sync), target_has_atomic = "ptr"))]
+#[cfg(all(not(no_global_oom_handling), not(no_rc), not(no_sync)))]
 pub mod task;
 #[cfg(test)]
 mod tests;

@@ -72,7 +72,7 @@ use crate::nonstandard_style::{method_context, MethodLateContext};
 
 use std::fmt::Write;
 
-// hardwired lints from librustc_middle
+// hardwired lints from rustc_lint_defs
 pub use rustc_session::lint::builtin::*;
 
 declare_lint! {
@@ -391,6 +391,10 @@ impl EarlyLintPass for UnsafeCode {
                 if let Some(attr) = attr::find_by_name(&it.attrs, sym::link_section) {
                     self.report_unsafe(cx, attr.span, BuiltinUnsafe::LinkSectionStatic);
                 }
+            }
+
+            ast::ItemKind::GlobalAsm(..) => {
+                self.report_unsafe(cx, it.span, BuiltinUnsafe::GlobalAsm);
             }
 
             _ => {}
@@ -1227,7 +1231,7 @@ impl<'tcx> LateLintPass<'tcx> for MutableTransmutes {
         }
 
         fn def_id_is_transmute(cx: &LateContext<'_>, def_id: DefId) -> bool {
-            cx.tcx.is_intrinsic(def_id) && cx.tcx.item_name(def_id) == sym::transmute
+            matches!(cx.tcx.intrinsic(def_id), Some(sym::transmute))
         }
     }
 }
@@ -1416,8 +1420,7 @@ impl<'tcx> LateLintPass<'tcx> for UnreachablePub {
     }
 
     fn check_field_def(&mut self, cx: &LateContext<'_>, field: &hir::FieldDef<'_>) {
-        let map = cx.tcx.hir();
-        if matches!(map.get_parent(field.hir_id), Node::Variant(_)) {
+        if matches!(cx.tcx.parent_hir_node(field.hir_id), Node::Variant(_)) {
             return;
         }
         self.perform_lint(cx, "field", field.def_id, field.vis_span, false);
@@ -1539,32 +1542,6 @@ impl<'tcx> LateLintPass<'tcx> for TypeAliasBounds {
                 inline_spans,
                 BuiltinTypeAliasGenericBounds { suggestion, sub },
             );
-        }
-    }
-}
-
-declare_lint_pass!(
-    /// Lint constants that are erroneous.
-    /// Without this lint, we might not get any diagnostic if the constant is
-    /// unused within this crate, even though downstream crates can't use it
-    /// without producing an error.
-    UnusedBrokenConst => []
-);
-
-impl<'tcx> LateLintPass<'tcx> for UnusedBrokenConst {
-    fn check_item(&mut self, cx: &LateContext<'_>, it: &hir::Item<'_>) {
-        match it.kind {
-            hir::ItemKind::Const(_, _, body_id) => {
-                let def_id = cx.tcx.hir().body_owner_def_id(body_id).to_def_id();
-                // trigger the query once for all constants since that will already report the errors
-                // FIXME(generic_const_items): Does this work properly with generic const items?
-                cx.tcx.ensure().const_eval_poly(def_id);
-            }
-            hir::ItemKind::Static(_, _, body_id) => {
-                let def_id = cx.tcx.hir().body_owner_def_id(body_id).to_def_id();
-                cx.tcx.ensure().eval_static_initializer(def_id);
-            }
-            _ => {}
         }
     }
 }

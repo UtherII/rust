@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,6 +41,16 @@ impl Translate for SilentEmitter {
     fn fallback_fluent_bundle(&self) -> &rustc_errors::FluentBundle {
         panic!("silent emitter attempted to translate a diagnostic");
     }
+
+    // Override `translate_message` for the silent emitter because eager translation of
+    // subdiagnostics result in a call to this.
+    fn translate_message<'a>(
+        &'a self,
+        message: &'a rustc_errors::DiagnosticMessage,
+        _: &'a rustc_errors::translation::FluentArgs<'_>,
+    ) -> Result<Cow<'_, str>, rustc_errors::error::TranslateError<'_>> {
+        rustc_errors::emitter::silent_translate(message)
+    }
 }
 
 impl Emitter for SilentEmitter {
@@ -47,7 +58,7 @@ impl Emitter for SilentEmitter {
         None
     }
 
-    fn emit_diagnostic(&mut self, _db: &Diagnostic) {}
+    fn emit_diagnostic(&mut self, _db: Diagnostic) {}
 }
 
 fn silent_emitter() -> Box<DynEmitter> {
@@ -64,7 +75,7 @@ struct SilentOnIgnoredFilesEmitter {
 }
 
 impl SilentOnIgnoredFilesEmitter {
-    fn handle_non_ignoreable_error(&mut self, db: &Diagnostic) {
+    fn handle_non_ignoreable_error(&mut self, db: Diagnostic) {
         self.has_non_ignorable_parser_errors = true;
         self.can_reset.store(false, Ordering::Release);
         self.emitter.emit_diagnostic(db);
@@ -86,7 +97,7 @@ impl Emitter for SilentOnIgnoredFilesEmitter {
         None
     }
 
-    fn emit_diagnostic(&mut self, db: &Diagnostic) {
+    fn emit_diagnostic(&mut self, db: Diagnostic) {
         if db.level() == DiagnosticLevel::Fatal {
             return self.handle_non_ignoreable_error(db);
         }
@@ -365,7 +376,7 @@ mod tests {
                 None
             }
 
-            fn emit_diagnostic(&mut self, _db: &Diagnostic) {
+            fn emit_diagnostic(&mut self, _db: Diagnostic) {
                 self.num_emitted_errors.fetch_add(1, Ordering::Release);
             }
         }
@@ -424,7 +435,7 @@ mod tests {
             );
             let span = MultiSpan::from_span(mk_sp(BytePos(0), BytePos(1)));
             let fatal_diagnostic = build_diagnostic(DiagnosticLevel::Fatal, Some(span));
-            emitter.emit_diagnostic(&fatal_diagnostic);
+            emitter.emit_diagnostic(fatal_diagnostic);
             assert_eq!(num_emitted_errors.load(Ordering::Acquire), 1);
             assert_eq!(can_reset_errors.load(Ordering::Acquire), false);
         }
@@ -449,7 +460,7 @@ mod tests {
             );
             let span = MultiSpan::from_span(mk_sp(BytePos(0), BytePos(1)));
             let non_fatal_diagnostic = build_diagnostic(DiagnosticLevel::Warning, Some(span));
-            emitter.emit_diagnostic(&non_fatal_diagnostic);
+            emitter.emit_diagnostic(non_fatal_diagnostic);
             assert_eq!(num_emitted_errors.load(Ordering::Acquire), 0);
             assert_eq!(can_reset_errors.load(Ordering::Acquire), true);
         }
@@ -473,7 +484,7 @@ mod tests {
             );
             let span = MultiSpan::from_span(mk_sp(BytePos(0), BytePos(1)));
             let non_fatal_diagnostic = build_diagnostic(DiagnosticLevel::Warning, Some(span));
-            emitter.emit_diagnostic(&non_fatal_diagnostic);
+            emitter.emit_diagnostic(non_fatal_diagnostic);
             assert_eq!(num_emitted_errors.load(Ordering::Acquire), 1);
             assert_eq!(can_reset_errors.load(Ordering::Acquire), false);
         }
@@ -512,9 +523,9 @@ mod tests {
             let bar_diagnostic = build_diagnostic(DiagnosticLevel::Warning, Some(bar_span));
             let foo_diagnostic = build_diagnostic(DiagnosticLevel::Warning, Some(foo_span));
             let fatal_diagnostic = build_diagnostic(DiagnosticLevel::Fatal, None);
-            emitter.emit_diagnostic(&bar_diagnostic);
-            emitter.emit_diagnostic(&foo_diagnostic);
-            emitter.emit_diagnostic(&fatal_diagnostic);
+            emitter.emit_diagnostic(bar_diagnostic);
+            emitter.emit_diagnostic(foo_diagnostic);
+            emitter.emit_diagnostic(fatal_diagnostic);
             assert_eq!(num_emitted_errors.load(Ordering::Acquire), 2);
             assert_eq!(can_reset_errors.load(Ordering::Acquire), false);
         }

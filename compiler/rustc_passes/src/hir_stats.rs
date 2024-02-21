@@ -345,6 +345,7 @@ impl<'v> hir_visit::Visitor<'v> for StatCollector<'v> {
                 BareFn,
                 Never,
                 Tup,
+                AnonAdt,
                 Path,
                 OpaqueDef,
                 TraitObject,
@@ -615,8 +616,9 @@ impl<'v> ast_visit::Visitor<'v> for StatCollector<'v> {
                 Infer,
                 ImplicitSelf,
                 MacCall,
-                Err,
-                CVarArgs
+                CVarArgs,
+                Dummy,
+                Err
             ]
         );
 

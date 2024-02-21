@@ -481,7 +481,12 @@ pub fn noop_visit_ty<T: MutVisitor>(ty: &mut P<Ty>, vis: &mut T) {
     let Ty { id, kind, span, tokens } = ty.deref_mut();
     vis.visit_id(id);
     match kind {
-        TyKind::Infer | TyKind::ImplicitSelf | TyKind::Err | TyKind::Never | TyKind::CVarArgs => {}
+        TyKind::Infer
+        | TyKind::ImplicitSelf
+        | TyKind::Err(_)
+        | TyKind::Dummy
+        | TyKind::Never
+        | TyKind::CVarArgs => {}
         TyKind::Slice(ty) => vis.visit_ty(ty),
         TyKind::Ptr(mt) => vis.visit_mt(mt),
         TyKind::Ref(lt, mt) => {
@@ -514,7 +519,8 @@ pub fn noop_visit_ty<T: MutVisitor>(ty: &mut P<Ty>, vis: &mut T) {
             visit_vec(bounds, |bound| vis.visit_param_bound(bound));
         }
         TyKind::MacCall(mac) => vis.visit_mac_call(mac),
-        TyKind::AnonStruct(fields) | TyKind::AnonUnion(fields) => {
+        TyKind::AnonStruct(id, fields) | TyKind::AnonUnion(id, fields) => {
+            vis.visit_id(id);
             fields.flat_map_in_place(|field| vis.flat_map_field_def(field));
         }
     }
@@ -1648,7 +1654,7 @@ impl DummyAstNode for Ty {
     fn dummy() -> Self {
         Ty {
             id: DUMMY_NODE_ID,
-            kind: TyKind::Err,
+            kind: TyKind::Dummy,
             span: Default::default(),
             tokens: Default::default(),
         }

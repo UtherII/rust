@@ -18,8 +18,9 @@ use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_middle::ty::{ToPredicate, TypeVisitableExt};
 use rustc_span::{sym, ErrorGuaranteed, DUMMY_SP};
 
+mod anon_const;
 mod inherent;
-mod opaques;
+mod opaque_types;
 mod weak_types;
 
 impl<'tcx> EvalCtxt<'_, 'tcx> {
@@ -31,60 +32,40 @@ impl<'tcx> EvalCtxt<'_, 'tcx> {
         let def_id = goal.predicate.def_id();
         match self.tcx().def_kind(def_id) {
             DefKind::AssocTy | DefKind::AssocConst => {
-                // To only compute normalization once for each projection we only
-                // assemble normalization candidates if the expected term is an
-                // unconstrained inference variable.
-                //
-                // Why: For better cache hits, since if we have an unconstrained RHS then
-                // there are only as many cache keys as there are (canonicalized) alias
-                // types in each normalizes-to goal. This also weakens inference in a
-                // forwards-compatible way so we don't use the value of the RHS term to
-                // affect candidate assembly for projections.
-                //
-                // E.g. for `<T as Trait>::Assoc == u32` we recursively compute the goal
-                // `exists<U> <T as Trait>::Assoc == U` and then take the resulting type for
-                // `U` and equate it with `u32`. This means that we don't need a separate
-                // projection cache in the solver, since we're piggybacking off of regular
-                // goal caching.
-                if self.term_is_fully_unconstrained(goal) {
-                    match self.tcx().associated_item(def_id).container {
-                        ty::AssocItemContainer::TraitContainer => {
+                match self.tcx().associated_item(def_id).container {
+                    ty::AssocItemContainer::TraitContainer => {
+                        // To only compute normalization once for each projection we only
+                        // assemble normalization candidates if the expected term is an
+                        // unconstrained inference variable.
+                        //
+                        // Why: For better cache hits, since if we have an unconstrained RHS then
+                        // there are only as many cache keys as there are (canonicalized) alias
+                        // types in each normalizes-to goal. This also weakens inference in a
+                        // forwards-compatible way so we don't use the value of the RHS term to
+                        // affect candidate assembly for projections.
+                        //
+                        // E.g. for `<T as Trait>::Assoc == u32` we recursively compute the goal
+                        // `exists<U> <T as Trait>::Assoc == U` and then take the resulting type for
+                        // `U` and equate it with `u32`. This means that we don't need a separate
+                        // projection cache in the solver, since we're piggybacking off of regular
+                        // goal caching.
+                        if self.term_is_fully_unconstrained(goal) {
                             let candidates = self.assemble_and_evaluate_candidates(goal);
                             self.merge_candidates(candidates)
-                        }
-                        ty::AssocItemContainer::ImplContainer => {
-                            self.normalize_inherent_associated_type(goal)
+                        } else {
+                            self.set_normalizes_to_hack_goal(goal);
+                            self.evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
                         }
                     }
-                } else {
-                    self.set_normalizes_to_hack_goal(goal);
-                    self.evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
+                    ty::AssocItemContainer::ImplContainer => {
+                        self.normalize_inherent_associated_type(goal)
+                    }
                 }
             }
             DefKind::AnonConst => self.normalize_anon_const(goal),
             DefKind::OpaqueTy => self.normalize_opaque_type(goal),
             DefKind::TyAlias => self.normalize_weak_type(goal),
             kind => bug!("unknown DefKind {} in projection goal: {goal:#?}", kind.descr(def_id)),
-        }
-    }
-
-    #[instrument(level = "debug", skip(self), ret)]
-    fn normalize_anon_const(
-        &mut self,
-        goal: Goal<'tcx, ty::NormalizesTo<'tcx>>,
-    ) -> QueryResult<'tcx> {
-        if let Some(normalized_const) = self.try_const_eval_resolve(
-            goal.param_env,
-            ty::UnevaluatedConst::new(goal.predicate.alias.def_id, goal.predicate.alias.args),
-            self.tcx()
-                .type_of(goal.predicate.alias.def_id)
-                .no_bound_vars()
-                .expect("const ty should not rely on other generics"),
-        ) {
-            self.eq(goal.param_env, normalized_const, goal.predicate.term.ct().unwrap())?;
-            self.evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
-        } else {
-            self.evaluate_added_goals_and_make_canonical_response(Certainty::AMBIGUOUS)
         }
     }
 }
@@ -366,6 +347,119 @@ impl<'tcx> assembly::GoalKind<'tcx> for NormalizesTo<'tcx> {
         Self::consider_implied_clause(ecx, goal, pred, [goal.with(tcx, output_is_sized_pred)])
     }
 
+    fn consider_builtin_async_fn_trait_candidates(
+        ecx: &mut EvalCtxt<'_, 'tcx>,
+        goal: Goal<'tcx, Self>,
+        goal_kind: ty::ClosureKind,
+    ) -> QueryResult<'tcx> {
+        let tcx = ecx.tcx();
+
+        let env_region = match goal_kind {
+            ty::ClosureKind::Fn | ty::ClosureKind::FnMut => goal.predicate.alias.args.region_at(2),
+            // Doesn't matter what this region is
+            ty::ClosureKind::FnOnce => tcx.lifetimes.re_static,
+        };
+        let (tupled_inputs_and_output_and_coroutine, nested_preds) =
+            structural_traits::extract_tupled_inputs_and_output_from_async_callable(
+                tcx,
+                goal.predicate.self_ty(),
+                goal_kind,
+                env_region,
+            )?;
+        let output_is_sized_pred =
+            tupled_inputs_and_output_and_coroutine.map_bound(|(_, output, _)| {
+                ty::TraitRef::from_lang_item(tcx, LangItem::Sized, DUMMY_SP, [output])
+            });
+
+        let pred = tupled_inputs_and_output_and_coroutine
+            .map_bound(|(inputs, output, coroutine)| {
+                let (projection_ty, term) = match tcx.item_name(goal.predicate.def_id()) {
+                    sym::CallOnceFuture => (
+                        ty::AliasTy::new(
+                            tcx,
+                            goal.predicate.def_id(),
+                            [goal.predicate.self_ty(), inputs],
+                        ),
+                        coroutine.into(),
+                    ),
+                    sym::CallMutFuture | sym::CallFuture => (
+                        ty::AliasTy::new(
+                            tcx,
+                            goal.predicate.def_id(),
+                            [
+                                ty::GenericArg::from(goal.predicate.self_ty()),
+                                inputs.into(),
+                                env_region.into(),
+                            ],
+                        ),
+                        coroutine.into(),
+                    ),
+                    sym::Output => (
+                        ty::AliasTy::new(
+                            tcx,
+                            goal.predicate.def_id(),
+                            [ty::GenericArg::from(goal.predicate.self_ty()), inputs.into()],
+                        ),
+                        output.into(),
+                    ),
+                    name => bug!("no such associated type: {name}"),
+                };
+                ty::ProjectionPredicate { projection_ty, term }
+            })
+            .to_predicate(tcx);
+
+        // A built-in `AsyncFn` impl only holds if the output is sized.
+        // (FIXME: technically we only need to check this if the type is a fn ptr...)
+        Self::consider_implied_clause(
+            ecx,
+            goal,
+            pred,
+            [goal.with(tcx, output_is_sized_pred)]
+                .into_iter()
+                .chain(nested_preds.into_iter().map(|pred| goal.with(tcx, pred))),
+        )
+    }
+
+    fn consider_builtin_async_fn_kind_helper_candidate(
+        ecx: &mut EvalCtxt<'_, 'tcx>,
+        goal: Goal<'tcx, Self>,
+    ) -> QueryResult<'tcx> {
+        let [
+            closure_fn_kind_ty,
+            goal_kind_ty,
+            borrow_region,
+            tupled_inputs_ty,
+            tupled_upvars_ty,
+            coroutine_captures_by_ref_ty,
+        ] = **goal.predicate.alias.args
+        else {
+            bug!();
+        };
+
+        let Some(closure_kind) = closure_fn_kind_ty.expect_ty().to_opt_closure_kind() else {
+            // We don't need to worry about the self type being an infer var.
+            return Err(NoSolution);
+        };
+        let Some(goal_kind) = goal_kind_ty.expect_ty().to_opt_closure_kind() else {
+            return Err(NoSolution);
+        };
+        if !closure_kind.extends(goal_kind) {
+            return Err(NoSolution);
+        }
+
+        let upvars_ty = ty::CoroutineClosureSignature::tupled_upvars_by_closure_kind(
+            ecx.tcx(),
+            goal_kind,
+            tupled_inputs_ty.expect_ty(),
+            tupled_upvars_ty.expect_ty(),
+            coroutine_captures_by_ref_ty.expect_ty(),
+            borrow_region.expect_region(),
+        );
+
+        ecx.eq(goal.param_env, goal.predicate.term.ty().unwrap(), upvars_ty)?;
+        ecx.evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
+    }
+
     fn consider_builtin_tuple_candidate(
         _ecx: &mut EvalCtxt<'_, 'tcx>,
         goal: Goal<'tcx, Self>,
@@ -378,6 +472,8 @@ impl<'tcx> assembly::GoalKind<'tcx> for NormalizesTo<'tcx> {
         goal: Goal<'tcx, Self>,
     ) -> QueryResult<'tcx> {
         let tcx = ecx.tcx();
+        let metadata_def_id = tcx.require_lang_item(LangItem::Metadata, None);
+        assert_eq!(metadata_def_id, goal.predicate.def_id());
         ecx.probe_misc_candidate("builtin pointee").enter(|ecx| {
             let metadata_ty = match goal.predicate.self_ty().kind() {
                 ty::Bool
@@ -391,6 +487,7 @@ impl<'tcx> assembly::GoalKind<'tcx> for NormalizesTo<'tcx> {
                 | ty::FnDef(..)
                 | ty::FnPtr(..)
                 | ty::Closure(..)
+                | ty::CoroutineClosure(..)
                 | ty::Infer(ty::IntVar(..) | ty::FloatVar(..))
                 | ty::Coroutine(..)
                 | ty::CoroutineWitness(..)
@@ -408,7 +505,10 @@ impl<'tcx> assembly::GoalKind<'tcx> for NormalizesTo<'tcx> {
                 }
 
                 ty::Alias(_, _) | ty::Param(_) | ty::Placeholder(..) => {
-                    // FIXME(ptr_metadata): It would also be possible to return a `Ok(Ambig)` with no constraints.
+                    // This is the "fallback impl" for type parameters, unnormalizable projections
+                    // and opaque types: If the `self_ty` is `Sized`, then the metadata is `()`.
+                    // FIXME(ptr_metadata): This impl overlaps with the other impls and shouldn't
+                    // exist. Instead, `Pointee<Metadata = ()>` should be a supertrait of `Sized`.
                     let sized_predicate = ty::TraitRef::from_lang_item(
                         tcx,
                         LangItem::Sized,
@@ -422,30 +522,16 @@ impl<'tcx> assembly::GoalKind<'tcx> for NormalizesTo<'tcx> {
 
                 ty::Adt(def, args) if def.is_struct() => match def.non_enum_variant().tail_opt() {
                     None => tcx.types.unit,
-                    Some(field_def) => {
-                        let self_ty = field_def.ty(tcx, args);
-                        // FIXME(-Znext-solver=coinductive): Should this be `GoalSource::ImplWhereBound`?
-                        ecx.add_goal(
-                            GoalSource::Misc,
-                            goal.with(tcx, goal.predicate.with_self_ty(tcx, self_ty)),
-                        );
-                        return ecx
-                            .evaluate_added_goals_and_make_canonical_response(Certainty::Yes);
+                    Some(tail_def) => {
+                        let tail_ty = tail_def.ty(tcx, args);
+                        Ty::new_projection(tcx, metadata_def_id, [tail_ty])
                     }
                 },
                 ty::Adt(_, _) => tcx.types.unit,
 
                 ty::Tuple(elements) => match elements.last() {
                     None => tcx.types.unit,
-                    Some(&self_ty) => {
-                        // FIXME(-Znext-solver=coinductive): Should this be `GoalSource::ImplWhereBound`?
-                        ecx.add_goal(
-                            GoalSource::Misc,
-                            goal.with(tcx, goal.predicate.with_self_ty(tcx, self_ty)),
-                        );
-                        return ecx
-                            .evaluate_added_goals_and_make_canonical_response(Certainty::Yes);
-                    }
+                    Some(&tail_ty) => Ty::new_projection(tcx, metadata_def_id, [tail_ty]),
                 },
 
                 ty::Infer(
@@ -627,6 +713,7 @@ impl<'tcx> assembly::GoalKind<'tcx> for NormalizesTo<'tcx> {
             | ty::FnDef(..)
             | ty::FnPtr(..)
             | ty::Closure(..)
+            | ty::CoroutineClosure(..)
             | ty::Infer(ty::IntVar(..) | ty::FloatVar(..))
             | ty::Coroutine(..)
             | ty::CoroutineWitness(..)

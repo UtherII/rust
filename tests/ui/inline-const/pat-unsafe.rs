@@ -1,6 +1,5 @@
-// check-pass
+//@ check-pass
 
-#![allow(incomplete_features)]
 #![warn(unused_unsafe)]
 #![feature(inline_const_pat)]
 

@@ -1,5 +1,3 @@
-#![deny(rustc::untranslatable_diagnostic)]
-
 use crate::base::ast::NestedMetaItem;
 use crate::errors;
 use crate::expand::{self, AstFragment, Invocation};
@@ -98,7 +96,7 @@ impl Annotatable {
         }
     }
 
-    pub fn visit_with<'a, V: Visitor<'a>>(&'a self, visitor: &mut V) {
+    pub fn visit_with<'a, V: Visitor<'a>>(&'a self, visitor: &mut V) -> V::Result {
         match self {
             Annotatable::Item(item) => visitor.visit_item(item),
             Annotatable::TraitItem(item) => visitor.visit_assoc_item(item, AssocCtxt::Trait),
@@ -569,10 +567,13 @@ impl DummyResult {
     }
 
     /// A plain dummy type.
-    pub fn raw_ty(sp: Span, is_error: bool) -> P<ast::Ty> {
+    pub fn raw_ty(sp: Span) -> P<ast::Ty> {
+        // FIXME(nnethercote): you might expect `ast::TyKind::Dummy` to be used here, but some
+        // values produced here end up being lowered to HIR, which `ast::TyKind::Dummy` does not
+        // support, so we use an empty tuple instead.
         P(ast::Ty {
             id: ast::DUMMY_NODE_ID,
-            kind: if is_error { ast::TyKind::Err } else { ast::TyKind::Tup(ThinVec::new()) },
+            kind: ast::TyKind::Tup(ThinVec::new()),
             span: sp,
             tokens: None,
         })
@@ -613,7 +614,7 @@ impl MacResult for DummyResult {
     }
 
     fn make_ty(self: Box<DummyResult>) -> Option<P<ast::Ty>> {
-        Some(DummyResult::raw_ty(self.span, self.is_error))
+        Some(DummyResult::raw_ty(self.span))
     }
 
     fn make_arms(self: Box<DummyResult>) -> Option<SmallVec<[ast::Arm; 1]>> {
@@ -1175,6 +1176,8 @@ impl<'a> ExtCtxt<'a> {
         for (span, notes) in self.expansions.iter() {
             let mut db = self.dcx().create_note(errors::TraceMacro { span: *span });
             for note in notes {
+                // FIXME: make this translatable
+                #[allow(rustc::untranslatable_diagnostic)]
                 db.note(note.clone());
             }
             db.emit();
@@ -1268,7 +1271,7 @@ pub fn expr_to_spanned_string<'a>(
                 );
                 Some((err, true))
             }
-            Ok(ast::LitKind::Err) => None,
+            Ok(ast::LitKind::Err(_)) => None,
             Err(err) => {
                 report_lit_error(&cx.sess.parse_sess, err, token_lit, expr.span);
                 None

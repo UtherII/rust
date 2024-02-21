@@ -106,7 +106,7 @@ fn main() {
 }
 "#,
         r#"
-use dep::{FirstStruct, some_module::{SecondStruct, ThirdStruct}};
+use dep::{some_module::{SecondStruct, ThirdStruct}, FirstStruct};
 
 fn main() {
     ThirdStruct
@@ -1394,6 +1394,25 @@ pub use bridge2::server2::Span2;
         expect![[r#"
             tt Span (use dep::Span)
             tt Span2 (use dep::Span2)
+        "#]],
+    );
+}
+
+#[test]
+fn flyimport_only_traits_in_impl_trait_block() {
+    check(
+        r#"
+//- /main.rs crate:main deps:dep
+pub struct Bar;
+
+impl Foo$0 for Bar { }
+//- /lib.rs crate:dep
+pub trait FooTrait;
+
+pub struct FooStruct;
+"#,
+        expect![[r#"
+            tt FooTrait (use dep::FooTrait)
         "#]],
     );
 }

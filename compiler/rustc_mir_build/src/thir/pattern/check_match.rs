@@ -291,7 +291,7 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
                 err = err.and(check_never_pattern(cx, pat));
             });
             err?;
-            Ok(cx.pattern_arena.alloc(cx.lower_pat(pat)))
+            Ok(self.pattern_arena.alloc(cx.lower_pat(pat)))
         }
     }
 
@@ -388,7 +388,6 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
             typeck_results: self.typeck_results,
             param_env: self.param_env,
             module: self.tcx.parent_module(self.lint_level).to_def_id(),
-            pattern_arena: self.pattern_arena,
             dropless_arena: self.dropless_arena,
             match_lint_level: self.lint_level,
             whole_match_span,
@@ -666,7 +665,8 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
 
         // Emit an extra note if the first uncovered witness would be uninhabited
         // if we disregard visibility.
-        let witness_1_is_privately_uninhabited = if self.tcx.features().exhaustive_patterns
+        let witness_1_is_privately_uninhabited = if (self.tcx.features().exhaustive_patterns
+            || self.tcx.features().min_exhaustive_patterns)
             && let Some(witness_1) = witnesses.get(0)
             && let ty::Adt(adt, args) = witness_1.ty().kind()
             && adt.is_enum()
@@ -1109,7 +1109,7 @@ fn report_non_exhaustive_match<'p, 'tcx>(
 
     let all_arms_have_guards = arms.iter().all(|arm_id| thir[*arm_id].guard.is_some());
     if !is_empty_match && all_arms_have_guards {
-        err.subdiagnostic(NonExhaustiveMatchAllArmsGuarded);
+        err.subdiagnostic(cx.tcx.dcx(), NonExhaustiveMatchAllArmsGuarded);
     }
     if let Some((span, sugg)) = suggestion {
         err.span_suggestion_verbose(span, msg, sugg, Applicability::HasPlaceholders);

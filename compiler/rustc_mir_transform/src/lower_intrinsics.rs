@@ -14,12 +14,22 @@ impl<'tcx> MirPass<'tcx> for LowerIntrinsics {
             if let TerminatorKind::Call { func, args, destination, target, .. } =
                 &mut terminator.kind
                 && let ty::FnDef(def_id, generic_args) = *func.ty(local_decls, tcx).kind()
-                && tcx.is_intrinsic(def_id)
+                && let Some(intrinsic_name) = tcx.intrinsic(def_id)
             {
-                let intrinsic_name = tcx.item_name(def_id);
                 match intrinsic_name {
                     sym::unreachable => {
                         terminator.kind = TerminatorKind::Unreachable;
+                    }
+                    sym::debug_assertions => {
+                        let target = target.unwrap();
+                        block.statements.push(Statement {
+                            source_info: terminator.source_info,
+                            kind: StatementKind::Assign(Box::new((
+                                *destination,
+                                Rvalue::NullaryOp(NullOp::DebugAssertions, tcx.types.bool),
+                            ))),
+                        });
+                        terminator.kind = TerminatorKind::Goto { target };
                     }
                     sym::forget => {
                         if let Some(target) = *target {

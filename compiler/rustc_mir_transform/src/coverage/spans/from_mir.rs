@@ -9,7 +9,6 @@ use rustc_span::{ExpnKind, MacroKind, Span, Symbol};
 use crate::coverage::graph::{
     BasicCoverageBlock, BasicCoverageBlockData, CoverageGraph, START_BCB,
 };
-use crate::coverage::spans::CoverageSpan;
 use crate::coverage::ExtractedHirInfo;
 
 /// Traverses the MIR body to produce an initial collection of coverage-relevant
@@ -22,26 +21,22 @@ pub(super) fn mir_to_initial_sorted_coverage_spans(
     mir_body: &mir::Body<'_>,
     hir_info: &ExtractedHirInfo,
     basic_coverage_blocks: &CoverageGraph,
-) -> Vec<CoverageSpan> {
-    let &ExtractedHirInfo { is_async_fn, fn_sig_span, body_span, .. } = hir_info;
+) -> Vec<SpanFromMir> {
+    let &ExtractedHirInfo { body_span, .. } = hir_info;
 
-    let mut initial_spans = vec![SpanFromMir::for_fn_sig(fn_sig_span)];
+    let mut initial_spans = vec![];
 
-    if is_async_fn {
-        // An async function desugars into a function that returns a future,
-        // with the user code wrapped in a closure. Any spans in the desugared
-        // outer function will be unhelpful, so just keep the signature span
-        // and ignore all of the spans in the MIR body.
-    } else {
-        for (bcb, bcb_data) in basic_coverage_blocks.iter_enumerated() {
-            initial_spans.extend(bcb_to_initial_coverage_spans(mir_body, body_span, bcb, bcb_data));
-        }
+    for (bcb, bcb_data) in basic_coverage_blocks.iter_enumerated() {
+        initial_spans.extend(bcb_to_initial_coverage_spans(mir_body, body_span, bcb, bcb_data));
+    }
 
-        // If no spans were extracted from the body, discard the signature span.
-        // FIXME: This preserves existing behavior; consider getting rid of it.
-        if initial_spans.len() == 1 {
-            initial_spans.clear();
-        }
+    // Only add the signature span if we found at least one span in the body.
+    if !initial_spans.is_empty() {
+        // If there is no usable signature span, add a fake one (before refinement)
+        // to avoid an ugly gap between the body start and the first real span.
+        // FIXME: Find a more principled way to solve this problem.
+        let fn_sig_span = hir_info.fn_sig_span_extended.unwrap_or_else(|| body_span.shrink_to_lo());
+        initial_spans.push(SpanFromMir::for_fn_sig(fn_sig_span));
     }
 
     initial_spans.sort_by(|a, b| basic_coverage_blocks.cmp_in_dominator_order(a.bcb, b.bcb));
@@ -65,7 +60,7 @@ pub(super) fn mir_to_initial_sorted_coverage_spans(
             .then_with(|| Ord::cmp(&a.is_closure, &b.is_closure).reverse())
     });
 
-    initial_spans.into_iter().map(SpanFromMir::into_coverage_span).collect::<Vec<_>>()
+    initial_spans
 }
 
 /// Macros that expand into branches (e.g. `assert!`, `trace!`) tend to generate
@@ -123,10 +118,10 @@ fn split_visible_macro_spans(initial_spans: &mut Vec<SpanFromMir>) {
     initial_spans.extend(extra_spans);
 }
 
-// Generate a set of `CoverageSpan`s from the filtered set of `Statement`s and `Terminator`s of
-// the `BasicBlock`(s) in the given `BasicCoverageBlockData`. One `CoverageSpan` is generated
+// Generate a set of coverage spans from the filtered set of `Statement`s and `Terminator`s of
+// the `BasicBlock`(s) in the given `BasicCoverageBlockData`. One coverage span is generated
 // for each `Statement` and `Terminator`. (Note that subsequent stages of coverage analysis will
-// merge some `CoverageSpan`s, at which point a `CoverageSpan` may represent multiple
+// merge some coverage spans, at which point a coverage span may represent multiple
 // `Statement`s and/or `Terminator`s.)
 fn bcb_to_initial_coverage_spans<'a, 'tcx>(
     mir_body: &'a mir::Body<'tcx>,
@@ -137,18 +132,23 @@ fn bcb_to_initial_coverage_spans<'a, 'tcx>(
     bcb_data.basic_blocks.iter().flat_map(move |&bb| {
         let data = &mir_body[bb];
 
+        let unexpand = move |expn_span| {
+            unexpand_into_body_span_with_visible_macro(expn_span, body_span)
+                // Discard any spans that fill the entire body, because they tend
+                // to represent compiler-inserted code, e.g. implicitly returning `()`.
+                .filter(|(span, _)| !span.source_equal(body_span))
+        };
+
         let statement_spans = data.statements.iter().filter_map(move |statement| {
             let expn_span = filtered_statement_span(statement)?;
-            let (span, visible_macro) =
-                unexpand_into_body_span_with_visible_macro(expn_span, body_span)?;
+            let (span, visible_macro) = unexpand(expn_span)?;
 
-            Some(SpanFromMir::new(span, visible_macro, bcb, is_closure_or_coroutine(statement)))
+            Some(SpanFromMir::new(span, visible_macro, bcb, is_closure_like(statement)))
         });
 
         let terminator_span = Some(data.terminator()).into_iter().filter_map(move |terminator| {
             let expn_span = filtered_terminator_span(terminator)?;
-            let (span, visible_macro) =
-                unexpand_into_body_span_with_visible_macro(expn_span, body_span)?;
+            let (span, visible_macro) = unexpand(expn_span)?;
 
             Some(SpanFromMir::new(span, visible_macro, bcb, false))
         });
@@ -157,10 +157,12 @@ fn bcb_to_initial_coverage_spans<'a, 'tcx>(
     })
 }
 
-fn is_closure_or_coroutine(statement: &Statement<'_>) -> bool {
+fn is_closure_like(statement: &Statement<'_>) -> bool {
     match statement.kind {
         StatementKind::Assign(box (_, Rvalue::Aggregate(box ref agg_kind, _))) => match agg_kind {
-            AggregateKind::Closure(_, _) | AggregateKind::Coroutine(_, _) => true,
+            AggregateKind::Closure(_, _)
+            | AggregateKind::Coroutine(_, _)
+            | AggregateKind::CoroutineClosure(..) => true,
             _ => false,
         },
         _ => false,
@@ -318,7 +320,7 @@ fn unexpand_into_body_span_with_prev(
 }
 
 #[derive(Debug)]
-struct SpanFromMir {
+pub(super) struct SpanFromMir {
     /// A span that has been extracted from MIR and then "un-expanded" back to
     /// within the current function's `body_span`. After various intermediate
     /// processing steps, this span is emitted as part of the final coverage
@@ -326,10 +328,10 @@ struct SpanFromMir {
     ///
     /// With the exception of `fn_sig_span`, this should always be contained
     /// within `body_span`.
-    span: Span,
+    pub(super) span: Span,
     visible_macro: Option<Symbol>,
-    bcb: BasicCoverageBlock,
-    is_closure: bool,
+    pub(super) bcb: BasicCoverageBlock,
+    pub(super) is_closure: bool,
 }
 
 impl SpanFromMir {
@@ -344,10 +346,5 @@ impl SpanFromMir {
         is_closure: bool,
     ) -> Self {
         Self { span, visible_macro, bcb, is_closure }
-    }
-
-    fn into_coverage_span(self) -> CoverageSpan {
-        let Self { span, visible_macro: _, bcb, is_closure } = self;
-        CoverageSpan::new(span, bcb, is_closure)
     }
 }

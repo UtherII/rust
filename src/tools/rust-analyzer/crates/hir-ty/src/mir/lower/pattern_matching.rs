@@ -1,6 +1,6 @@
 //! MIR lowering for patterns
 
-use hir_def::{hir::LiteralOrConst, resolver::HasResolver, AssocItemId};
+use hir_def::AssocItemId;
 
 use crate::BindingMode;
 
@@ -114,7 +114,7 @@ impl MirLowerCtx<'_> {
                             index: i as u32,
                         }))
                     }),
-                    &mut cond_place,
+                    &cond_place,
                     mode,
                 )?
             }

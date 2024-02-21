@@ -46,6 +46,13 @@ pub(super) fn mangle<'tcx>(
         ty::InstanceDef::VTableShim(_) => Some("vtable"),
         ty::InstanceDef::ReifyShim(_) => Some("reify"),
 
+        ty::InstanceDef::ConstructCoroutineInClosureShim { target_kind, .. }
+        | ty::InstanceDef::CoroutineKindShim { target_kind, .. } => match target_kind {
+            ty::ClosureKind::Fn => unreachable!(),
+            ty::ClosureKind::FnMut => Some("fn_mut"),
+            ty::ClosureKind::FnOnce => Some("fn_once"),
+        },
+
         _ => None,
     };
 
@@ -244,8 +251,8 @@ impl<'tcx> Printer<'tcx> for SymbolMangler<'tcx> {
             None => "M",
         });
 
-        // Encode impl generic params if the substitutions contain parameters (implying
-        // polymorphization is enabled) and this isn't an inherent impl.
+        // Encode impl generic params if the generic parameters contain non-region parameters
+        // (implying polymorphization is enabled) and this isn't an inherent impl.
         if impl_trait_ref.is_some() && args.iter().any(|a| a.has_non_region_param()) {
             self.path_generic_args(
                 |this| {
@@ -386,6 +393,7 @@ impl<'tcx> Printer<'tcx> for SymbolMangler<'tcx> {
             | ty::FnDef(def_id, args)
             | ty::Alias(ty::Projection | ty::Opaque, ty::AliasTy { def_id, args, .. })
             | ty::Closure(def_id, args)
+            | ty::CoroutineClosure(def_id, args)
             | ty::Coroutine(def_id, args) => {
                 self.print_def_path(def_id, args)?;
             }
@@ -740,7 +748,8 @@ impl<'tcx> Printer<'tcx> for SymbolMangler<'tcx> {
             | DefPathData::GlobalAsm
             | DefPathData::Impl
             | DefPathData::MacroNs(_)
-            | DefPathData::LifetimeNs(_) => {
+            | DefPathData::LifetimeNs(_)
+            | DefPathData::AnonAdt => {
                 bug!("symbol_names: unexpected DefPathData: {:?}", disambiguated_data.data)
             }
         };

@@ -109,7 +109,10 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentCtxt<'tcx> {
         let mut errors = Vec::new();
         for i in 0.. {
             if !infcx.tcx.recursion_limit().value_within_limit(i) {
-                unimplemented!("overflowed on pending obligations: {:?}", self.obligations);
+                // Only return true errors that we have accumulated while processing;
+                // keep ambiguities around, *including overflows*, because they shouldn't
+                // be considered true errors.
+                return errors;
             }
 
             let mut has_changed = false;
@@ -140,7 +143,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentCtxt<'tcx> {
                                     )
                                 }
                                 ty::PredicateKind::Subtype(pred) => {
-                                    let (a, b) = infcx.instantiate_binder_with_placeholders(
+                                    let (a, b) = infcx.enter_forall_and_leak_universe(
                                         goal.predicate.kind().rebind((pred.a, pred.b)),
                                     );
                                     let expected_found = ExpectedFound::new(true, a, b);
@@ -150,7 +153,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentCtxt<'tcx> {
                                     )
                                 }
                                 ty::PredicateKind::Coerce(pred) => {
-                                    let (a, b) = infcx.instantiate_binder_with_placeholders(
+                                    let (a, b) = infcx.enter_forall_and_leak_universe(
                                         goal.predicate.kind().rebind((pred.a, pred.b)),
                                     );
                                     let expected_found = ExpectedFound::new(false, a, b);

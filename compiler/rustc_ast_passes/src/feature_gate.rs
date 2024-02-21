@@ -22,6 +22,9 @@ macro_rules! gate {
     }};
     ($visitor:expr, $feature:ident, $span:expr, $explain:expr, $help:expr) => {{
         if !$visitor.features.$feature && !$span.allows_unstable(sym::$feature) {
+            // FIXME: make this translatable
+            #[allow(rustc::diagnostic_outside_of_impl)]
+            #[allow(rustc::untranslatable_diagnostic)]
             feature_err(&$visitor.sess, sym::$feature, $span, $explain).with_help($help).emit();
         }
     }};
@@ -360,6 +363,19 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 self.visit_ty(output_ty)
             }
         }
+    }
+
+    fn visit_generic_args(&mut self, args: &'a ast::GenericArgs) {
+        // This check needs to happen here because the never type can be returned from a function,
+        // but cannot be used in any other context. If this check was in `visit_fn_ret_ty`, it
+        // include both functions and generics like `impl Fn() -> !`.
+        if let ast::GenericArgs::Parenthesized(generic_args) = args
+            && let ast::FnRetTy::Ty(ref ty) = generic_args.output
+            && matches!(ty.kind, ast::TyKind::Never)
+        {
+            gate!(&self, never_type, ty.span, "the `!` type is experimental");
+        }
+        visit::walk_generic_args(self, args);
     }
 
     fn visit_expr(&mut self, e: &'a ast::Expr) {

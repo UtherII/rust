@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![feature(transparent_unions)]
 
 use std::mem::size_of;
@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 
-trait Trait { fn dummy(&self) { } }
+trait Trait { fn dummy(&self) { } } //~ WARN method `dummy` is never used
 trait Mirror { type Image; }
 impl<T> Mirror for T { type Image = T; }
 struct ParamTypeStruct<T>(#[allow(dead_code)] T);

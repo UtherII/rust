@@ -25,9 +25,7 @@ use rustc_ast::{Arm, BlockCheckMode, Expr, ExprKind, Label, Movability, RangeLim
 use rustc_ast::{ClosureBinder, MetaItemLit, StmtKind};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::stack::ensure_sufficient_stack;
-use rustc_errors::{
-    AddToDiagnostic, Applicability, Diagnostic, DiagnosticBuilder, PResult, StashKey,
-};
+use rustc_errors::{AddToDiagnostic, Applicability, DiagnosticBuilder, PResult, StashKey};
 use rustc_lexer::unescape::unescape_char;
 use rustc_macros::Subdiagnostic;
 use rustc_session::errors::{report_lit_error, ExprParenthesesNeeded};
@@ -865,7 +863,7 @@ impl<'a> Parser<'a> {
             );
             let mut err = self.dcx().struct_span_err(span, msg);
 
-            let suggest_parens = |err: &mut Diagnostic| {
+            let suggest_parens = |err: &mut DiagnosticBuilder<'_>| {
                 let suggestions = vec![
                     (span.shrink_to_lo(), "(".to_string()),
                     (span.shrink_to_hi(), ")".to_string()),
@@ -1433,7 +1431,7 @@ impl<'a> Parser<'a> {
                     // If the input is something like `if a { 1 } else { 2 } | if a { 3 } else { 4 }`
                     // then suggest parens around the lhs.
                     if let Some(sp) = this.sess.ambiguous_block_expr_parse.borrow().get(&lo) {
-                        err.subdiagnostic(ExprParenthesesNeeded::surrounding(*sp));
+                        err.subdiagnostic(this.dcx(), ExprParenthesesNeeded::surrounding(*sp));
                     }
                     err
                 })
@@ -2140,12 +2138,12 @@ impl<'a> Parser<'a> {
                     Err(err) => {
                         let span = token.uninterpolated_span();
                         self.bump();
-                        report_lit_error(self.sess, err, lit, span);
+                        let guar = report_lit_error(self.sess, err, lit, span);
                         // Pack possible quotes and prefixes from the original literal into
                         // the error literal's symbol so they can be pretty-printed faithfully.
                         let suffixless_lit = token::Lit::new(lit.kind, lit.symbol, None);
                         let symbol = Symbol::intern(&suffixless_lit.to_string());
-                        let lit = token::Lit::new(token::Err, symbol, lit.suffix);
+                        let lit = token::Lit::new(token::Err(guar), symbol, lit.suffix);
                         Some(
                             MetaItemLit::from_token_lit(lit, span)
                                 .unwrap_or_else(|_| unreachable!()),
@@ -2911,12 +2909,22 @@ impl<'a> Parser<'a> {
                 Ok(arm) => arms.push(arm),
                 Err(e) => {
                     // Recover by skipping to the end of the block.
-                    e.emit();
+                    let guar = e.emit();
                     self.recover_stmt();
                     let span = lo.to(self.token.span);
                     if self.token == token::CloseDelim(Delimiter::Brace) {
                         self.bump();
                     }
+                    // Always push at least one arm to make the match non-empty
+                    arms.push(Arm {
+                        attrs: Default::default(),
+                        pat: self.mk_pat(span, ast::PatKind::Err(guar)),
+                        guard: None,
+                        body: Some(self.mk_expr_err(span)),
+                        span,
+                        id: DUMMY_NODE_ID,
+                        is_placeholder: false,
+                    });
                     return Ok(self.mk_expr_with_attrs(
                         span,
                         ExprKind::Match(scrutinee, arms),
@@ -3288,7 +3296,7 @@ impl<'a> Parser<'a> {
                         } else {
                             Applicability::MaybeIncorrect
                         };
-                        err.span_suggestion_verbose(sugg_sp, msg, "=> ".to_string(), applicability);
+                        err.span_suggestion_verbose(sugg_sp, msg, "=> ", applicability);
                     }
                 }
                 err
@@ -3427,7 +3435,7 @@ impl<'a> Parser<'a> {
         let mut recover_async = false;
         let in_if_guard = self.restrictions.contains(Restrictions::IN_IF_GUARD);
 
-        let mut async_block_err = |e: &mut Diagnostic, span: Span| {
+        let mut async_block_err = |e: &mut DiagnosticBuilder<'_>, span: Span| {
             recover_async = true;
             errors::AsyncBlockIn2015 { span }.add_to_diagnostic(e);
             errors::HelpUseLatestEdition::new().add_to_diagnostic(e);

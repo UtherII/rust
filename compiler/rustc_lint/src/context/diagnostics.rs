@@ -1,3 +1,6 @@
+#![allow(rustc::diagnostic_outside_of_impl)]
+#![allow(rustc::untranslatable_diagnostic)]
+
 use rustc_ast::util::unicode::TEXT_FLOW_CONTROL_CHARS;
 use rustc_errors::{add_elided_lifetime_in_path_suggestion, DiagnosticBuilder};
 use rustc_errors::{Applicability, SuggestionStyle};
@@ -188,7 +191,24 @@ pub(super) fn builtin(
             #[allow(rustc::potential_query_instability)]
             let possibilities: Vec<Symbol> =
                 sess.parse_sess.check_config.expecteds.keys().copied().collect();
-            let is_from_cargo = std::env::var_os("CARGO").is_some();
+
+            let mut names_possibilities: Vec<_> = if value.is_none() {
+                // We later sort and display all the possibilities, so the order here does not matter.
+                #[allow(rustc::potential_query_instability)]
+                sess.parse_sess
+                    .check_config
+                    .expecteds
+                    .iter()
+                    .filter_map(|(k, v)| match v {
+                        ExpectedValues::Some(v) if v.contains(&Some(name)) => Some(k),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            let is_from_cargo = rustc_session::utils::was_invoked_from_cargo();
             let mut is_feature_cfg = name == sym::feature;
 
             if is_feature_cfg && is_from_cargo {
@@ -262,17 +282,30 @@ pub(super) fn builtin(
                 }
 
                 is_feature_cfg |= best_match == sym::feature;
-            } else if !possibilities.is_empty() {
-                let mut possibilities =
-                    possibilities.iter().map(Symbol::as_str).collect::<Vec<_>>();
-                possibilities.sort();
-                let possibilities = possibilities.join("`, `");
+            } else {
+                if !names_possibilities.is_empty() && names_possibilities.len() <= 3 {
+                    names_possibilities.sort();
+                    for cfg_name in names_possibilities.iter() {
+                        db.span_suggestion(
+                            name_span,
+                            "found config with similar value",
+                            format!("{cfg_name} = \"{name}\""),
+                            Applicability::MaybeIncorrect,
+                        );
+                    }
+                }
+                if !possibilities.is_empty() {
+                    let mut possibilities =
+                        possibilities.iter().map(Symbol::as_str).collect::<Vec<_>>();
+                    possibilities.sort();
+                    let possibilities = possibilities.join("`, `");
 
-                // The list of expected names can be long (even by default) and
-                // so the diagnostic produced can take a lot of space. To avoid
-                // cloging the user output we only want to print that diagnostic
-                // once.
-                db.help_once(format!("expected names are: `{possibilities}`"));
+                    // The list of expected names can be long (even by default) and
+                    // so the diagnostic produced can take a lot of space. To avoid
+                    // cloging the user output we only want to print that diagnostic
+                    // once.
+                    db.help_once(format!("expected names are: `{possibilities}`"));
+                }
             }
 
             let inst = if let Some((value, _value_span)) = value {
@@ -310,7 +343,7 @@ pub(super) fn builtin(
                 .copied()
                 .flatten()
                 .collect();
-            let is_from_cargo = std::env::var_os("CARGO").is_some();
+            let is_from_cargo = rustc_session::utils::was_invoked_from_cargo();
 
             // Show the full list if all possible values for a given name, but don't do it
             // for names as the possibilities could be very long

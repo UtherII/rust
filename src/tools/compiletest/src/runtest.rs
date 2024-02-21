@@ -1936,7 +1936,7 @@ impl<'test> TestCx<'test> {
     fn document(&self, out_dir: &Path) -> ProcRes {
         if self.props.build_aux_docs {
             for rel_ab in &self.props.aux_builds {
-                let aux_testpaths = self.compute_aux_test_paths(rel_ab);
+                let aux_testpaths = self.compute_aux_test_paths(&self.testpaths, rel_ab);
                 let aux_props =
                     self.props.from_aux_file(&aux_testpaths.file, self.revision, self.config);
                 let aux_cx = TestCx {
@@ -2092,24 +2092,18 @@ impl<'test> TestCx<'test> {
         proc_res
     }
 
-    /// For each `aux-build: foo/bar` annotation, we check to find the
-    /// file in an `auxiliary` directory relative to the test itself.
-    fn compute_aux_test_paths(&self, rel_ab: &str) -> TestPaths {
-        let test_ab = self
-            .testpaths
-            .file
-            .parent()
-            .expect("test file path has no parent")
-            .join("auxiliary")
-            .join(rel_ab);
+    /// For each `aux-build: foo/bar` annotation, we check to find the file in an `auxiliary`
+    /// directory relative to the test itself (not any intermediate auxiliaries).
+    fn compute_aux_test_paths(&self, of: &TestPaths, rel_ab: &str) -> TestPaths {
+        let test_ab =
+            of.file.parent().expect("test file path has no parent").join("auxiliary").join(rel_ab);
         if !test_ab.exists() {
             self.fatal(&format!("aux-build `{}` source not found", test_ab.display()))
         }
 
         TestPaths {
             file: test_ab,
-            relative_dir: self
-                .testpaths
+            relative_dir: of
                 .relative_dir
                 .join(self.output_testname_unique())
                 .join("auxiliary")
@@ -2135,7 +2129,7 @@ impl<'test> TestCx<'test> {
         self.config.target.contains("vxworks") && !self.is_vxworks_pure_static()
     }
 
-    fn build_all_auxiliary(&self, rustc: &mut Command) -> PathBuf {
+    fn aux_output_dir(&self) -> PathBuf {
         let aux_dir = self.aux_output_dir_name();
 
         if !self.props.aux_builds.is_empty() {
@@ -2143,22 +2137,26 @@ impl<'test> TestCx<'test> {
             create_dir_all(&aux_dir).unwrap();
         }
 
+        aux_dir
+    }
+
+    fn build_all_auxiliary(&self, of: &TestPaths, aux_dir: &Path, rustc: &mut Command) {
         for rel_ab in &self.props.aux_builds {
-            self.build_auxiliary(rel_ab, &aux_dir);
+            self.build_auxiliary(of, rel_ab, &aux_dir);
         }
 
         for (aux_name, aux_path) in &self.props.aux_crates {
-            let is_dylib = self.build_auxiliary(&aux_path, &aux_dir);
+            let is_dylib = self.build_auxiliary(of, &aux_path, &aux_dir);
             let lib_name =
                 get_lib_name(&aux_path.trim_end_matches(".rs").replace('-', "_"), is_dylib);
             rustc.arg("--extern").arg(format!("{}={}/{}", aux_name, aux_dir.display(), lib_name));
         }
-
-        aux_dir
     }
 
     fn compose_and_run_compiler(&self, mut rustc: Command, input: Option<String>) -> ProcRes {
-        let aux_dir = self.build_all_auxiliary(&mut rustc);
+        let aux_dir = self.aux_output_dir();
+        self.build_all_auxiliary(&self.testpaths, &aux_dir, &mut rustc);
+
         self.props.unset_rustc_env.iter().fold(&mut rustc, Command::env_remove);
         rustc.envs(self.props.rustc_env.clone());
         self.compose_and_run(
@@ -2172,10 +2170,10 @@ impl<'test> TestCx<'test> {
     /// Builds an aux dependency.
     ///
     /// Returns whether or not it is a dylib.
-    fn build_auxiliary(&self, source_path: &str, aux_dir: &Path) -> bool {
-        let aux_testpaths = self.compute_aux_test_paths(source_path);
+    fn build_auxiliary(&self, of: &TestPaths, source_path: &str, aux_dir: &Path) -> bool {
+        let aux_testpaths = self.compute_aux_test_paths(of, source_path);
         let aux_props = self.props.from_aux_file(&aux_testpaths.file, self.revision, self.config);
-        let aux_output = TargetLocation::ThisDirectory(self.aux_output_dir_name());
+        let aux_output = TargetLocation::ThisDirectory(aux_dir.to_path_buf());
         let aux_cx = TestCx {
             config: self.config,
             props: &aux_props,
@@ -2193,6 +2191,7 @@ impl<'test> TestCx<'test> {
             LinkToAux::No,
             Vec::new(),
         );
+        aux_cx.build_all_auxiliary(of, aux_dir, &mut aux_rustc);
 
         for key in &aux_props.unset_rustc_env {
             aux_rustc.env_remove(key);
@@ -2467,6 +2466,7 @@ impl<'test> TestCx<'test> {
                     "-Zvalidate-mir",
                     "-Zlint-mir",
                     "-Zdump-mir-exclude-pass-number",
+                    "--crate-type=rlib",
                 ]);
                 if let Some(pass) = &self.props.mir_unit_test {
                     rustc.args(&["-Zmir-opt-level=0", &format!("-Zmir-enable-passes=+{}", pass)]);
@@ -3033,7 +3033,8 @@ impl<'test> TestCx<'test> {
             LinkToAux::Yes,
             Vec::new(),
         );
-        new_rustdoc.build_all_auxiliary(&mut rustc);
+        let aux_dir = new_rustdoc.aux_output_dir();
+        new_rustdoc.build_all_auxiliary(&new_rustdoc.testpaths, &aux_dir, &mut rustc);
 
         let proc_res = new_rustdoc.document(&compare_dir);
         if !proc_res.status.success() {
@@ -3937,10 +3938,15 @@ impl<'test> TestCx<'test> {
                 self.props.compare_output_lines_by_subset,
             );
         } else if !expected_fixed.is_empty() {
-            panic!(
-                "the `// run-rustfix` directive wasn't found but a `*.fixed` \
-                 file was found"
-            );
+            if self.config.suite == "ui" {
+                panic!(
+                    "the `//@ run-rustfix` directive wasn't found but a `*.fixed` file was found"
+                );
+            } else {
+                panic!(
+                    "the `// run-rustfix` directive wasn't found but a `*.fixed` file was found"
+                );
+            }
         }
 
         if errors > 0 {
@@ -4315,10 +4321,11 @@ impl<'test> TestCx<'test> {
             let mut seen_allocs = indexmap::IndexSet::new();
 
             // The alloc-id appears in pretty-printed allocations.
-            let re =
+            static ALLOC_ID_PP_RE: Lazy<Regex> = Lazy::new(|| {
                 Regex::new(r"╾─*a(lloc)?([0-9]+)(\+0x[0-9]+)?(<imm>)?( \([0-9]+ ptr bytes\))?─*╼")
-                    .unwrap();
-            normalized = re
+                    .unwrap()
+            });
+            normalized = ALLOC_ID_PP_RE
                 .replace_all(&normalized, |caps: &Captures<'_>| {
                     // Renumber the captured index.
                     let index = caps.get(2).unwrap().as_str().to_string();
@@ -4331,8 +4338,9 @@ impl<'test> TestCx<'test> {
                 .into_owned();
 
             // The alloc-id appears in a sentence.
-            let re = Regex::new(r"\balloc([0-9]+)\b").unwrap();
-            normalized = re
+            static ALLOC_ID_RE: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"\balloc([0-9]+)\b").unwrap());
+            normalized = ALLOC_ID_RE
                 .replace_all(&normalized, |caps: &Captures<'_>| {
                     let index = caps.get(1).unwrap().as_str().to_string();
                     let (index, _) = seen_allocs.insert_full(index);

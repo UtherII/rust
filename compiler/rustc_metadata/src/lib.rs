@@ -5,6 +5,7 @@
 #![feature(decl_macro)]
 #![feature(extract_if)]
 #![feature(coroutines)]
+#![feature(generic_nonzero)]
 #![feature(iter_from_coroutine)]
 #![feature(let_chains)]
 #![feature(if_let_guard)]
@@ -15,8 +16,6 @@
 #![feature(try_blocks)]
 #![feature(never_type)]
 #![allow(rustc::potential_query_instability)]
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 
 extern crate proc_macro;
 

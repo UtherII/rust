@@ -194,16 +194,16 @@ impl<'tcx> Queries<'tcx> {
         let Some((def_id, _)) = tcx.entry_fn(()) else { return };
         for attr in tcx.get_attrs(def_id, sym::rustc_error) {
             match attr.meta_item_list() {
-                // Check if there is a `#[rustc_error(span_delayed_bug_from_inside_query)]`.
+                // Check if there is a `#[rustc_error(delayed_bug_from_inside_query)]`.
                 Some(list)
                     if list.iter().any(|list_item| {
                         matches!(
                             list_item.ident().map(|i| i.name),
-                            Some(sym::span_delayed_bug_from_inside_query)
+                            Some(sym::delayed_bug_from_inside_query)
                         )
                     }) =>
                 {
-                    tcx.ensure().trigger_span_delayed_bug(def_id);
+                    tcx.ensure().trigger_delayed_bug(def_id);
                 }
 
                 // Bare `#[rustc_error]`.
@@ -259,7 +259,7 @@ pub struct Linker {
 impl Linker {
     pub fn link(self, sess: &Session, codegen_backend: &dyn CodegenBackend) -> Result<()> {
         let (codegen_results, work_products) =
-            codegen_backend.join_codegen(self.ongoing_codegen, sess, &self.output_filenames)?;
+            codegen_backend.join_codegen(self.ongoing_codegen, sess, &self.output_filenames);
 
         sess.compile_status()?;
 

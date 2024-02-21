@@ -31,14 +31,12 @@
 #![feature(array_windows)]
 #![feature(box_patterns)]
 #![feature(control_flow_enum)]
+#![feature(generic_nonzero)]
 #![feature(if_let_guard)]
 #![feature(iter_order_by)]
 #![feature(let_chains)]
-#![cfg_attr(not(bootstrap), feature(trait_upcasting))]
-#![feature(min_specialization)]
+#![feature(trait_upcasting)]
 #![feature(rustc_attrs)]
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 #![allow(internal_features)]
 
 #[macro_use]
@@ -215,8 +213,6 @@ late_lint_methods!(
             ExplicitOutlivesRequirements: ExplicitOutlivesRequirements,
             InvalidValue: InvalidValue,
             DerefNullPtr: DerefNullPtr,
-            // May Depend on constants elsewhere
-            UnusedBrokenConst: UnusedBrokenConst,
             UnstableFeatures: UnstableFeatures,
             UngatedAsyncFnTrackCaller: UngatedAsyncFnTrackCaller,
             ArrayIntoIter: ArrayIntoIter::default(),
@@ -327,6 +323,7 @@ fn register_builtins(store: &mut LintStore) {
     store.register_renamed("or_patterns_back_compat", "rust_2021_incompatible_or_patterns");
     store.register_renamed("non_fmt_panic", "non_fmt_panics");
     store.register_renamed("unused_tuple_struct_fields", "dead_code");
+    store.register_renamed("static_mut_ref", "static_mut_refs");
 
     // These were moved to tool lints, but rustc still sees them when compiling normally, before
     // tool lints are registered, so `check_tool_name_for_backwards_compat` doesn't work. Use
@@ -515,6 +512,20 @@ fn register_builtins(store: &mut LintStore) {
         "coinductive_overlap_in_coherence",
         "converted into hard error, see PR #118649 \
          <https://github.com/rust-lang/rust/pull/118649> for more information",
+    );
+    store.register_removed(
+        "illegal_floating_point_literal_pattern",
+        "no longer a warning, float patterns behave the same as `==`",
+    );
+    store.register_removed(
+        "nontrivial_structural_match",
+        "no longer needed, see RFC #3535 \
+         <https://rust-lang.github.io/rfcs/3535-constants-in-patterns.html> for more information",
+    );
+    store.register_removed(
+        "suspicious_auto_trait_impls",
+        "no longer needed, see #93367 \
+         <https://github.com/rust-lang/rust/issues/93367> for more information",
     );
 }
 

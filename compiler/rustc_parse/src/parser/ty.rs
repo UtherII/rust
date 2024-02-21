@@ -3,19 +3,18 @@ use super::{Parser, PathStyle, TokenType};
 use crate::errors::{
     self, DynAfterMut, ExpectedFnPathFoundFnKeyword, ExpectedMutOrConstInRawPointerType,
     FnPointerCannotBeAsync, FnPointerCannotBeConst, FnPtrWithGenerics, FnPtrWithGenericsSugg,
-    InvalidDynKeyword, LifetimeAfterMut, NeedPlusAfterTraitObjectLifetime, NestedCVariadicType,
-    ReturnTypesUseThinArrow,
+    HelpUseLatestEdition, InvalidDynKeyword, LifetimeAfterMut, NeedPlusAfterTraitObjectLifetime,
+    NestedCVariadicType, ReturnTypesUseThinArrow,
 };
 use crate::{maybe_recover_from_interpolated_ty_qpath, maybe_whole};
 
-use ast::DUMMY_NODE_ID;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use rustc_ast::util::case::Case;
 use rustc_ast::{
-    self as ast, BareFnTy, BoundConstness, BoundPolarity, FnRetTy, GenericBound, GenericBounds,
-    GenericParam, Generics, Lifetime, MacCall, MutTy, Mutability, PolyTraitRef,
-    TraitBoundModifiers, TraitObjectSyntax, Ty, TyKind,
+    self as ast, BareFnTy, BoundAsyncness, BoundConstness, BoundPolarity, FnRetTy, GenericBound,
+    GenericBounds, GenericParam, Generics, Lifetime, MacCall, MutTy, Mutability, PolyTraitRef,
+    TraitBoundModifiers, TraitObjectSyntax, Ty, TyKind, DUMMY_NODE_ID,
 };
 use rustc_errors::{Applicability, PResult};
 use rustc_span::symbol::{kw, sym, Ident};
@@ -347,8 +346,10 @@ impl<'a> Parser<'a> {
                 AllowCVariadic::No => {
                     // FIXME(Centril): Should we just allow `...` syntactically
                     // anywhere in a type and use semantic restrictions instead?
-                    self.dcx().emit_err(NestedCVariadicType { span: lo.to(self.prev_token.span) });
-                    TyKind::Err
+                    let guar = self
+                        .dcx()
+                        .emit_err(NestedCVariadicType { span: lo.to(self.prev_token.span) });
+                    TyKind::Err(guar)
                 }
             }
         } else {
@@ -397,8 +398,9 @@ impl<'a> Parser<'a> {
             self.parse_record_struct_body(if is_union { "union" } else { "struct" }, lo, false)?;
         let span = lo.to(self.prev_token.span);
         self.sess.gated_spans.gate(sym::unnamed_fields, span);
-        // These can be rejected during AST validation in `deny_anon_struct_or_union`.
-        let kind = if is_union { TyKind::AnonUnion(fields) } else { TyKind::AnonStruct(fields) };
+        let id = ast::DUMMY_NODE_ID;
+        let kind =
+            if is_union { TyKind::AnonUnion(id, fields) } else { TyKind::AnonStruct(id, fields) };
         Ok(self.mk_ty(span, kind))
     }
 
@@ -493,8 +495,8 @@ impl<'a> Parser<'a> {
             {
                 // Recover from `[LIT; EXPR]` and `[LIT]`
                 self.bump();
-                err.emit();
-                self.mk_ty(self.prev_token.span, TyKind::Err)
+                let guar = err.emit();
+                self.mk_ty(self.prev_token.span, TyKind::Err(guar))
             }
             Err(err) => return Err(err),
         };
@@ -776,9 +778,10 @@ impl<'a> Parser<'a> {
             || self.check(&token::Not)
             || self.check(&token::Question)
             || self.check(&token::Tilde)
-            || self.check_keyword(kw::Const)
             || self.check_keyword(kw::For)
             || self.check(&token::OpenDelim(Delimiter::Parenthesis))
+            || self.check_keyword(kw::Const)
+            || self.check_keyword(kw::Async)
     }
 
     /// Parses a bound according to the grammar:
@@ -880,6 +883,26 @@ impl<'a> Parser<'a> {
             BoundConstness::Never
         };
 
+        let asyncness = if self.token.uninterpolated_span().at_least_rust_2018()
+            && self.eat_keyword(kw::Async)
+        {
+            self.sess.gated_spans.gate(sym::async_closure, self.prev_token.span);
+            BoundAsyncness::Async(self.prev_token.span)
+        } else if self.may_recover()
+            && self.token.uninterpolated_span().is_rust_2015()
+            && self.is_kw_followed_by_ident(kw::Async)
+        {
+            self.bump(); // eat `async`
+            self.dcx().emit_err(errors::AsyncBoundModifierIn2015 {
+                span: self.prev_token.span,
+                help: HelpUseLatestEdition::new(),
+            });
+            self.sess.gated_spans.gate(sym::async_closure, self.prev_token.span);
+            BoundAsyncness::Async(self.prev_token.span)
+        } else {
+            BoundAsyncness::Normal
+        };
+
         let polarity = if self.eat(&token::Question) {
             BoundPolarity::Maybe(self.prev_token.span)
         } else if self.eat(&token::Not) {
@@ -889,7 +912,7 @@ impl<'a> Parser<'a> {
             BoundPolarity::Positive
         };
 
-        Ok(TraitBoundModifiers { constness, polarity })
+        Ok(TraitBoundModifiers { constness, asyncness, polarity })
     }
 
     /// Parses a type bound according to:

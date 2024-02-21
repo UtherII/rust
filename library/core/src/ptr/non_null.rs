@@ -6,7 +6,7 @@ use crate::intrinsics::assert_unsafe_precondition;
 use crate::marker::Unsize;
 use crate::mem::SizedTypeProperties;
 use crate::mem::{self, MaybeUninit};
-use crate::num::NonZeroUsize;
+use crate::num::{NonZero, NonZeroUsize};
 use crate::ops::{CoerceUnsized, DispatchFromDyn};
 use crate::ptr;
 use crate::ptr::Unique;
@@ -218,7 +218,10 @@ impl<T: ?Sized> NonNull<T> {
     pub const unsafe fn new_unchecked(ptr: *mut T) -> Self {
         // SAFETY: the caller must guarantee that `ptr` is non-null.
         unsafe {
-            assert_unsafe_precondition!("NonNull::new_unchecked requires that the pointer is non-null", [T: ?Sized](ptr: *mut T) => !ptr.is_null());
+            assert_unsafe_precondition!(
+                "NonNull::new_unchecked requires that the pointer is non-null",
+                (ptr: *mut () = ptr as *mut ()) => !ptr.is_null()
+            );
             NonNull { pointer: ptr as _ }
         }
     }
@@ -292,7 +295,7 @@ impl<T: ?Sized> NonNull<T> {
     pub fn addr(self) -> NonZeroUsize {
         // SAFETY: The pointer is guaranteed by the type to be non-null,
         // meaning that the address will be non-zero.
-        unsafe { NonZeroUsize::new_unchecked(self.pointer.addr()) }
+        unsafe { NonZero::new_unchecked(self.pointer.addr()) }
     }
 
     /// Creates a new pointer with the given address.
@@ -470,7 +473,7 @@ impl<T: ?Sized> NonNull<T> {
     #[inline]
     pub const fn cast<U>(self) -> NonNull<U> {
         // SAFETY: `self` is a `NonNull` pointer which is necessarily non-null
-        unsafe { NonNull::new_unchecked(self.as_ptr() as *mut U) }
+        unsafe { NonNull { pointer: self.as_ptr() as *mut U } }
     }
 
     /// Calculates the offset from a pointer.
@@ -1588,8 +1591,7 @@ impl<T> NonNull<[T]> {
     #[unstable(feature = "slice_ptr_get", issue = "74265")]
     #[rustc_const_unstable(feature = "slice_ptr_get", issue = "74265")]
     pub const fn as_non_null_ptr(self) -> NonNull<T> {
-        // SAFETY: We know `self` is non-null.
-        unsafe { NonNull::new_unchecked(self.as_ptr().as_mut_ptr()) }
+        self.cast()
     }
 
     /// Returns a raw pointer to the slice's buffer.
@@ -1825,9 +1827,7 @@ impl<T: ?Sized> hash::Hash for NonNull<T> {
 impl<T: ?Sized> From<Unique<T>> for NonNull<T> {
     #[inline]
     fn from(unique: Unique<T>) -> Self {
-        // SAFETY: A Unique pointer cannot be null, so the conditions for
-        // new_unchecked() are respected.
-        unsafe { NonNull::new_unchecked(unique.as_ptr()) }
+        unique.as_non_null_ptr()
     }
 }
 
@@ -1850,8 +1850,7 @@ impl<T: ?Sized> From<&T> for NonNull<T> {
     /// This conversion is safe and infallible since references cannot be null.
     #[inline]
     fn from(reference: &T) -> Self {
-        // SAFETY: A reference cannot be null, so the conditions for
-        // new_unchecked() are respected.
+        // SAFETY: A reference cannot be null.
         unsafe { NonNull { pointer: reference as *const T } }
     }
 }

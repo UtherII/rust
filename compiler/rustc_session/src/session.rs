@@ -22,7 +22,7 @@ use rustc_errors::emitter::{DynEmitter, HumanEmitter, HumanReadableErrorType};
 use rustc_errors::json::JsonEmitter;
 use rustc_errors::registry::Registry;
 use rustc_errors::{
-    codes::*, fallback_fluent_bundle, DiagCtxt, DiagnosticBuilder, DiagnosticMessage, ErrCode,
+    codes::*, fallback_fluent_bundle, DiagCtxt, DiagnosticBuilder, DiagnosticMessage,
     ErrorGuaranteed, FatalAbort, FluentBundle, IntoDiagnostic, LazyFallbackBundle, TerminalUrl,
 };
 use rustc_macros::HashStable_Generic;
@@ -288,19 +288,9 @@ impl Session {
     pub fn finish_diagnostics(&self, registry: &Registry) {
         self.check_miri_unleashed_features();
         self.dcx().print_error_count(registry);
-        self.emit_future_breakage();
-    }
-
-    fn emit_future_breakage(&self) {
-        if !self.opts.json_future_incompat {
-            return;
+        if self.opts.json_future_incompat {
+            self.dcx().emit_future_breakage_report();
         }
-
-        let diags = self.dcx().take_future_breakage_diagnostics();
-        if diags.is_empty() {
-            return;
-        }
-        self.dcx().emit_future_breakage_report(diags);
     }
 
     /// Returns true if the crate is a testing one.
@@ -325,17 +315,16 @@ impl Session {
     pub fn compile_status(&self) -> Result<(), ErrorGuaranteed> {
         // We must include lint errors here.
         if let Some(reported) = self.dcx().has_errors_or_lint_errors() {
-            let _ = self.dcx().emit_stashed_diagnostics();
+            self.dcx().emit_stashed_diagnostics();
             Err(reported)
         } else {
             Ok(())
         }
     }
 
-    /// Used for code paths of expensive computations that should only take place when
-    /// warnings or errors are emitted. If no messages are emitted ("good path"), then
-    /// it's likely a bug.
-    pub fn good_path_delayed_bug(&self, msg: impl Into<DiagnosticMessage>) {
+    /// Record the fact that we called `trimmed_def_paths`, and do some
+    /// checking about whether its cost was justified.
+    pub fn record_trimmed_def_paths(&self) {
         if self.opts.unstable_opts.print_type_sizes
             || self.opts.unstable_opts.query_dep_graph
             || self.opts.unstable_opts.dump_mir.is_some()
@@ -346,7 +335,7 @@ impl Session {
             return;
         }
 
-        self.dcx().good_path_delayed_bug(msg)
+        self.dcx().set_must_produce_diag()
     }
 
     #[inline]
@@ -556,8 +545,8 @@ impl Session {
                 if fuel.remaining == 0 && !fuel.out_of_fuel {
                     if self.dcx().can_emit_warnings() {
                         // We only call `msg` in case we can actually emit warnings.
-                        // Otherwise, this could cause a `good_path_delayed_bug` to
-                        // trigger (issue #79546).
+                        // Otherwise, this could cause a `must_produce_diag` ICE
+                        // (issue #79546).
                         self.dcx().emit_warn(errors::OptimisationFuelExhausted { msg: msg() });
                     }
                     fuel.out_of_fuel = true;
@@ -775,6 +764,13 @@ impl Session {
 
     pub fn tls_model(&self) -> TlsModel {
         self.opts.unstable_opts.tls_model.unwrap_or(self.target.tls_model)
+    }
+
+    pub fn direct_access_external_data(&self) -> Option<bool> {
+        self.opts
+            .unstable_opts
+            .direct_access_external_data
+            .or(self.target.direct_access_external_data)
     }
 
     pub fn split_debuginfo(&self) -> SplitDebuginfo {

@@ -144,15 +144,14 @@ impl<'tcx> LateLintPass<'tcx> for TyTyKind {
         match &ty.kind {
             TyKind::Path(QPath::Resolved(_, path)) => {
                 if lint_ty_kind_usage(cx, &path.res) {
-                    let hir = cx.tcx.hir();
-                    let span = match hir.find_parent(ty.hir_id) {
-                        Some(Node::Pat(Pat {
+                    let span = match cx.tcx.parent_hir_node(ty.hir_id) {
+                        Node::Pat(Pat {
                             kind:
                                 PatKind::Path(qpath)
                                 | PatKind::TupleStruct(qpath, ..)
                                 | PatKind::Struct(qpath, ..),
                             ..
-                        })) => {
+                        }) => {
                             if let QPath::TypeRelative(qpath_ty, ..) = qpath
                                 && qpath_ty.hir_id == ty.hir_id
                             {
@@ -161,7 +160,7 @@ impl<'tcx> LateLintPass<'tcx> for TyTyKind {
                                 None
                             }
                         }
-                        Some(Node::Expr(Expr { kind: ExprKind::Path(qpath), .. })) => {
+                        Node::Expr(Expr { kind: ExprKind::Path(qpath), .. }) => {
                             if let QPath::TypeRelative(qpath_ty, ..) = qpath
                                 && qpath_ty.hir_id == ty.hir_id
                             {
@@ -172,7 +171,7 @@ impl<'tcx> LateLintPass<'tcx> for TyTyKind {
                         }
                         // Can't unify these two branches because qpath below is `&&` and above is `&`
                         // and `A | B` paths don't play well together with adjustments, apparently.
-                        Some(Node::Expr(Expr { kind: ExprKind::Struct(qpath, ..), .. })) => {
+                        Node::Expr(Expr { kind: ExprKind::Struct(qpath, ..), .. }) => {
                             if let QPath::TypeRelative(qpath_ty, ..) = qpath
                                 && qpath_ty.hir_id == ty.hir_id
                             {
@@ -345,7 +344,7 @@ declare_tool_lint! {
     ///
     /// More details on translatable diagnostics can be found [here](https://rustc-dev-guide.rust-lang.org/diagnostics/translation.html).
     pub rustc::UNTRANSLATABLE_DIAGNOSTIC,
-    Allow,
+    Deny,
     "prevent creation of diagnostics which cannot be translated",
     report_in_external_macro: true
 }
@@ -357,7 +356,7 @@ declare_tool_lint! {
     ///
     /// More details on diagnostics implementations can be found [here](https://rustc-dev-guide.rust-lang.org/diagnostics/diagnostic-structs.html).
     pub rustc::DIAGNOSTIC_OUTSIDE_OF_IMPL,
-    Allow,
+    Deny,
     "prevent creation of diagnostics outside of `IntoDiagnostic`/`AddToDiagnostic` impls",
     report_in_external_macro: true
 }

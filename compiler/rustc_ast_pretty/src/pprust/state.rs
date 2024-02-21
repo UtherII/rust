@@ -8,6 +8,7 @@ mod item;
 use crate::pp::Breaks::{Consistent, Inconsistent};
 use crate::pp::{self, Breaks};
 use crate::pprust::state::expr::FixupContext;
+use ast::TraitBoundModifiers;
 use rustc_ast::attr::AttrIdGenerator;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, BinOpToken, CommentKind, Delimiter, Nonterminal, Token, TokenKind};
@@ -253,7 +254,7 @@ fn literal_to_string(lit: token::Lit) -> String {
         token::CStrRaw(n) => {
             format!("cr{delim}\"{symbol}\"{delim}", delim = "#".repeat(n as usize))
         }
-        token::Integer | token::Float | token::Bool | token::Err => symbol.to_string(),
+        token::Integer | token::Float | token::Bool | token::Err(_) => symbol.to_string(),
     };
 
     if let Some(suffix) = suffix {
@@ -1002,11 +1003,11 @@ impl<'a> State<'a> {
                 }
                 self.pclose();
             }
-            ast::TyKind::AnonStruct(fields) => {
+            ast::TyKind::AnonStruct(_, fields) => {
                 self.head("struct");
                 self.print_record_struct_body(fields, ty.span);
             }
-            ast::TyKind::AnonUnion(fields) => {
+            ast::TyKind::AnonUnion(_, fields) => {
                 self.head("union");
                 self.print_record_struct_body(fields, ty.span);
             }
@@ -1047,9 +1048,14 @@ impl<'a> State<'a> {
             ast::TyKind::Infer => {
                 self.word("_");
             }
-            ast::TyKind::Err => {
+            ast::TyKind::Err(_) => {
                 self.popen();
                 self.word("/*ERROR*/");
+                self.pclose();
+            }
+            ast::TyKind::Dummy => {
+                self.popen();
+                self.word("/*DUMMY*/");
                 self.pclose();
             }
             ast::TyKind::ImplicitSelf => {
@@ -1590,18 +1596,28 @@ impl<'a> State<'a> {
             }
 
             match bound {
-                GenericBound::Trait(tref, modifier) => {
-                    match modifier.constness {
+                GenericBound::Trait(
+                    tref,
+                    TraitBoundModifiers { constness, asyncness, polarity },
+                ) => {
+                    match constness {
                         ast::BoundConstness::Never => {}
                         ast::BoundConstness::Always(_) | ast::BoundConstness::Maybe(_) => {
-                            self.word_space(modifier.constness.as_str());
+                            self.word_space(constness.as_str());
                         }
                     }
 
-                    match modifier.polarity {
+                    match asyncness {
+                        ast::BoundAsyncness::Normal => {}
+                        ast::BoundAsyncness::Async(_) => {
+                            self.word_space(asyncness.as_str());
+                        }
+                    }
+
+                    match polarity {
                         ast::BoundPolarity::Positive => {}
                         ast::BoundPolarity::Negative(_) | ast::BoundPolarity::Maybe(_) => {
-                            self.word(modifier.polarity.as_str());
+                            self.word(polarity.as_str());
                         }
                     }
 

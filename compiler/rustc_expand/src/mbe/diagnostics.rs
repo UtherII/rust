@@ -7,7 +7,7 @@ use crate::mbe::{
 use rustc_ast::token::{self, Token, TokenKind};
 use rustc_ast::tokenstream::TokenStream;
 use rustc_ast_pretty::pprust;
-use rustc_errors::{Applicability, Diagnostic, DiagnosticBuilder, DiagnosticMessage};
+use rustc_errors::{Applicability, DiagCtxt, DiagnosticBuilder, DiagnosticMessage};
 use rustc_parse::parser::{Parser, Recovery};
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::Ident;
@@ -34,10 +34,10 @@ pub(super) fn failed_to_match_macro<'cx>(
     if try_success_result.is_ok() {
         // Nonterminal parser recovery might turn failed matches into successful ones,
         // but for that it must have emitted an error already
-        tracker
-            .cx
-            .dcx()
-            .span_delayed_bug(sp, "Macro matching returned a success on the second try");
+        assert!(
+            tracker.cx.dcx().has_errors().is_some(),
+            "Macro matching returned a success on the second try"
+        );
     }
 
     if let Some(result) = tracker.result {
@@ -58,7 +58,7 @@ pub(super) fn failed_to_match_macro<'cx>(
         err.span_label(cx.source_map().guess_head_span(def_span), "when calling this macro");
     }
 
-    annotate_doc_comment(&mut err, sess.source_map(), span);
+    annotate_doc_comment(cx.sess.dcx(), &mut err, sess.source_map(), span);
 
     if let Some(span) = remaining_matcher.span() {
         err.span_note(span, format!("while trying to match {remaining_matcher}"));
@@ -285,7 +285,11 @@ pub(super) fn emit_frag_parse_err(
     e.emit();
 }
 
-pub(crate) fn annotate_err_with_kind(err: &mut Diagnostic, kind: AstFragmentKind, span: Span) {
+pub(crate) fn annotate_err_with_kind(
+    err: &mut DiagnosticBuilder<'_>,
+    kind: AstFragmentKind,
+    span: Span,
+) {
     match kind {
         AstFragmentKind::Ty => {
             err.span_label(span, "this macro call doesn't expand to a type");
@@ -311,12 +315,17 @@ enum ExplainDocComment {
     },
 }
 
-pub(super) fn annotate_doc_comment(err: &mut Diagnostic, sm: &SourceMap, span: Span) {
+pub(super) fn annotate_doc_comment(
+    dcx: &DiagCtxt,
+    err: &mut DiagnosticBuilder<'_>,
+    sm: &SourceMap,
+    span: Span,
+) {
     if let Ok(src) = sm.span_to_snippet(span) {
         if src.starts_with("///") || src.starts_with("/**") {
-            err.subdiagnostic(ExplainDocComment::Outer { span });
+            err.subdiagnostic(dcx, ExplainDocComment::Outer { span });
         } else if src.starts_with("//!") || src.starts_with("/*!") {
-            err.subdiagnostic(ExplainDocComment::Inner { span });
+            err.subdiagnostic(dcx, ExplainDocComment::Inner { span });
         }
     }
 }

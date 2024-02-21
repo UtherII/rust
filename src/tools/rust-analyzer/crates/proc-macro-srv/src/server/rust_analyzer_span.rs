@@ -1,4 +1,4 @@
-//! proc-macro server backend based on rust-analyzer's internal span represention
+//! proc-macro server backend based on rust-analyzer's internal span representation
 //! This backend is used solely by rust-analyzer as it ties into rust-analyzer internals.
 //!
 //! It is an unfortunate result of how the proc-macro API works that we need to look into the
@@ -70,11 +70,58 @@ impl server::FreeFunctions for RaSpanServer {
         &mut self,
         s: &str,
     ) -> Result<bridge::Literal<Self::Span, Self::Symbol>, ()> {
-        // FIXME: keep track of LitKind and Suffix
+        use proc_macro::bridge::LitKind;
+        use rustc_lexer::{LiteralKind, Token, TokenKind};
+
+        let mut tokens = rustc_lexer::tokenize(s);
+        let minus_or_lit = tokens.next().unwrap_or(Token { kind: TokenKind::Eof, len: 0 });
+
+        let lit = if minus_or_lit.kind == TokenKind::Minus {
+            let lit = tokens.next().ok_or(())?;
+            if !matches!(
+                lit.kind,
+                TokenKind::Literal {
+                    kind: LiteralKind::Int { .. } | LiteralKind::Float { .. },
+                    ..
+                }
+            ) {
+                return Err(());
+            }
+            lit
+        } else {
+            minus_or_lit
+        };
+
+        if tokens.next().is_some() {
+            return Err(());
+        }
+
+        let TokenKind::Literal { kind, suffix_start } = lit.kind else { return Err(()) };
+        let kind = match kind {
+            LiteralKind::Int { .. } => LitKind::Integer,
+            LiteralKind::Float { .. } => LitKind::Float,
+            LiteralKind::Char { .. } => LitKind::Char,
+            LiteralKind::Byte { .. } => LitKind::Byte,
+            LiteralKind::Str { .. } => LitKind::Str,
+            LiteralKind::ByteStr { .. } => LitKind::ByteStr,
+            LiteralKind::CStr { .. } => LitKind::CStr,
+            LiteralKind::RawStr { n_hashes } => LitKind::StrRaw(n_hashes.unwrap_or_default()),
+            LiteralKind::RawByteStr { n_hashes } => {
+                LitKind::ByteStrRaw(n_hashes.unwrap_or_default())
+            }
+            LiteralKind::RawCStr { n_hashes } => LitKind::CStrRaw(n_hashes.unwrap_or_default()),
+        };
+
+        let (lit, suffix) = s.split_at(suffix_start as usize);
+        let suffix = match suffix {
+            "" | "_" => None,
+            suffix => Some(Symbol::intern(self.interner, suffix)),
+        };
+
         Ok(bridge::Literal {
-            kind: bridge::LitKind::Err,
-            symbol: Symbol::intern(self.interner, s),
-            suffix: None,
+            kind,
+            symbol: Symbol::intern(self.interner, lit),
+            suffix,
             span: self.call_site,
         })
     }
@@ -104,7 +151,7 @@ impl server::TokenStream for RaSpanServer {
                     delimiter: delim_to_internal(group.delimiter, group.span),
                     token_trees: match group.stream {
                         Some(stream) => stream.into_iter().collect(),
-                        None => Vec::new(),
+                        None => Box::new([]),
                     },
                 };
                 let tree = tt::TokenTree::from(group);
@@ -202,7 +249,7 @@ impl server::TokenStream for RaSpanServer {
                 tt::TokenTree::Leaf(tt::Leaf::Literal(lit)) => {
                     bridge::TokenTree::Literal(bridge::Literal {
                         // FIXME: handle literal kinds
-                        kind: bridge::LitKind::Err,
+                        kind: bridge::LitKind::Integer, // dummy
                         symbol: Symbol::intern(self.interner, &lit.text),
                         // FIXME: handle suffixes
                         suffix: None,
@@ -221,7 +268,7 @@ impl server::TokenStream for RaSpanServer {
                     stream: if subtree.token_trees.is_empty() {
                         None
                     } else {
-                        Some(subtree.token_trees.into_iter().collect())
+                        Some(subtree.token_trees.into_vec().into_iter().collect())
                     },
                     span: bridge::DelimSpan::from_single(subtree.delimiter.open),
                 }),

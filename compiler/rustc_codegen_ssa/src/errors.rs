@@ -122,6 +122,12 @@ pub struct NoNatvisDirectory {
 }
 
 #[derive(Diagnostic)]
+#[diag(codegen_ssa_no_saved_object_file)]
+pub struct NoSavedObjectFile<'a> {
+    pub cgu_name: &'a str,
+}
+
+#[derive(Diagnostic)]
 #[diag(codegen_ssa_copy_path_buf)]
 pub struct CopyPathBuf {
     pub source_file: PathBuf,
@@ -356,8 +362,11 @@ impl<G: EmissionGuarantee> IntoDiagnostic<'_, G> for LinkingFailed<'_> {
         // which by now we have no way to translate.
         if contains_undefined_ref {
             diag.note(fluent::codegen_ssa_extern_funcs_not_found)
-                .note(fluent::codegen_ssa_specify_libraries_to_link)
-                .note(fluent::codegen_ssa_use_cargo_directive);
+                .note(fluent::codegen_ssa_specify_libraries_to_link);
+
+            if rustc_session::utils::was_invoked_from_cargo() {
+                diag.note(fluent::codegen_ssa_use_cargo_directive);
+            }
         }
         diag
     }

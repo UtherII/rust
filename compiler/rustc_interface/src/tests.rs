@@ -20,7 +20,7 @@ use rustc_span::{FileName, SourceFileHashAlgorithm};
 use rustc_target::spec::{CodeModel, LinkerFlavorCli, MergeFunctions, PanicStrategy, RelocModel};
 use rustc_target::spec::{RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, TlsModel};
 use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroUsize;
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -749,6 +749,7 @@ fn test_unstable_options_tracking_hash() {
     tracked!(debug_macros, true);
     tracked!(default_hidden_visibility, Some(true));
     tracked!(dep_info_omit_d_target, true);
+    tracked!(direct_access_external_data, Some(true));
     tracked!(dual_proc_macros, true);
     tracked!(dwarf_version, Some(5));
     tracked!(emit_thin_lto, false);
@@ -826,7 +827,7 @@ fn test_unstable_options_tracking_hash() {
     tracked!(tls_model, Some(TlsModel::GeneralDynamic));
     tracked!(translate_remapped_path_to_local_path, false);
     tracked!(trap_unreachable, Some(false));
-    tracked!(treat_err_as_bug, NonZeroUsize::new(1));
+    tracked!(treat_err_as_bug, NonZero::new(1));
     tracked!(tune_cpu, Some(String::from("abc")));
     tracked!(uninit_const_chunk_threshold, 123);
     tracked!(unleash_the_miri_inside_of_you, true);

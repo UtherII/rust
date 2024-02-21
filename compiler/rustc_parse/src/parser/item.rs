@@ -562,6 +562,15 @@ impl<'a> Parser<'a> {
             self.sess.gated_spans.gate(sym::const_trait_impl, span);
         }
 
+        // Parse stray `impl async Trait`
+        if (self.token.uninterpolated_span().at_least_rust_2018()
+            && self.token.is_keyword(kw::Async))
+            || self.is_kw_followed_by_ident(kw::Async)
+        {
+            self.bump();
+            self.dcx().emit_err(errors::AsyncImpl { span: self.prev_token.span });
+        }
+
         let polarity = self.parse_polarity();
 
         // Parse both types and traits as a type, then reinterpret if necessary.
@@ -591,7 +600,11 @@ impl<'a> Parser<'a> {
         let ty_second = if self.token == token::DotDot {
             // We need to report this error after `cfg` expansion for compatibility reasons
             self.bump(); // `..`, do not add it to expected tokens
-            Some(self.mk_ty(self.prev_token.span, TyKind::Err))
+
+            // AST validation later detects this `TyKind::Dummy` and emits an
+            // error. (#121072 will hopefully remove all this special handling
+            // of the obsolete `impl Trait for ..` and then this can go away.)
+            Some(self.mk_ty(self.prev_token.span, TyKind::Dummy))
         } else if has_for || self.token.can_begin_type() {
             Some(self.parse_ty()?)
         } else {
@@ -1453,7 +1466,7 @@ impl<'a> Parser<'a> {
                                 err.span_suggestion_verbose(
                                     prev_span,
                                     "perhaps you meant to use `struct` here",
-                                    "struct".to_string(),
+                                    "struct",
                                     Applicability::MaybeIncorrect,
                                 );
                             }
@@ -1917,7 +1930,7 @@ impl<'a> Parser<'a> {
         if self.token.kind == token::Not {
             if let Err(mut err) = self.unexpected::<FieldDef>() {
                 // Encounter the macro invocation
-                err.subdiagnostic(MacroExpandsToAdtField { adt_ty });
+                err.subdiagnostic(self.dcx(), MacroExpandsToAdtField { adt_ty });
                 return Err(err);
             }
         }
@@ -2336,10 +2349,13 @@ impl<'a> Parser<'a> {
                             .into_iter()
                             .any(|s| self.prev_token.is_ident_named(s));
 
-                        err.subdiagnostic(errors::FnTraitMissingParen {
-                            span: self.prev_token.span,
-                            machine_applicable,
-                        });
+                        err.subdiagnostic(
+                            self.dcx(),
+                            errors::FnTraitMissingParen {
+                                span: self.prev_token.span,
+                                machine_applicable,
+                            },
+                        );
                     }
                     return Err(err);
                 }
@@ -2628,13 +2644,13 @@ impl<'a> Parser<'a> {
             p.recover_diff_marker();
             let snapshot = p.create_snapshot_for_diagnostic();
             let param = p.parse_param_general(req_name, first_param).or_else(|e| {
-                e.emit();
+                let guar = e.emit();
                 let lo = p.prev_token.span;
                 p.restore_snapshot(snapshot);
                 // Skip every token until next possible arg or end.
                 p.eat_to_tokens(&[&token::Comma, &token::CloseDelim(Delimiter::Parenthesis)]);
                 // Create a placeholder argument for proper arg count (issue #34264).
-                Ok(dummy_arg(Ident::new(kw::Empty, lo.to(p.prev_token.span))))
+                Ok(dummy_arg(Ident::new(kw::Empty, lo.to(p.prev_token.span)), guar))
             });
             // ...now that we've parsed the first argument, `self` is no longer allowed.
             first_param = false;
@@ -2671,8 +2687,8 @@ impl<'a> Parser<'a> {
                     return if let Some(ident) =
                         this.parameter_without_type(&mut err, pat, is_name_required, first_param)
                     {
-                        err.emit();
-                        Ok((dummy_arg(ident), TrailingToken::None))
+                        let guar = err.emit();
+                        Ok((dummy_arg(ident, guar), TrailingToken::None))
                     } else {
                         Err(err)
                     };

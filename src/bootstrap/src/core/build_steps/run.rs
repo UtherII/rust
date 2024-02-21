@@ -23,7 +23,7 @@ impl Step for ExpandYamlAnchors {
     fn run(self, builder: &Builder<'_>) {
         builder.info("Expanding YAML anchors in the GitHub Actions configuration");
         builder.run_delaying_failure(
-            &mut builder.tool_cmd(Tool::ExpandYamlAnchors).arg("generate").arg(&builder.src),
+            builder.tool_cmd(Tool::ExpandYamlAnchors).arg("generate").arg(&builder.src),
         );
     }
 
@@ -165,7 +165,7 @@ impl Step for Miri {
             SourceType::InTree,
             &[],
         );
-        miri.add_rustc_lib_path(builder, compiler);
+        miri.add_rustc_lib_path(builder);
         // Forward arguments.
         miri.arg("--").arg("--target").arg(target.rustc_target_arg());
         miri.args(builder.config.args());

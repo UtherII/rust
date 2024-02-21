@@ -21,7 +21,7 @@ use rustc_span::SourceFileHashAlgorithm;
 use std::collections::BTreeMap;
 
 use std::hash::{DefaultHasher, Hasher};
-use std::num::{IntErrorKind, NonZeroUsize};
+use std::num::{IntErrorKind, NonZero};
 use std::path::PathBuf;
 use std::str;
 
@@ -617,7 +617,7 @@ mod parse {
     pub(crate) fn parse_threads(slot: &mut usize, v: Option<&str>) -> bool {
         match v.and_then(|s| s.parse().ok()) {
             Some(0) => {
-                *slot = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+                *slot = std::thread::available_parallelism().map_or(1, NonZero::<usize>::get);
                 true
             }
             Some(i) => {
@@ -991,7 +991,10 @@ mod parse {
         true
     }
 
-    pub(crate) fn parse_treat_err_as_bug(slot: &mut Option<NonZeroUsize>, v: Option<&str>) -> bool {
+    pub(crate) fn parse_treat_err_as_bug(
+        slot: &mut Option<NonZero<usize>>,
+        v: Option<&str>,
+    ) -> bool {
         match v {
             Some(s) => match s.parse() {
                 Ok(val) => {
@@ -1004,7 +1007,7 @@ mod parse {
                 }
             },
             None => {
-                *slot = NonZeroUsize::new(1);
+                *slot = NonZero::new(1);
                 true
             }
         }
@@ -1572,6 +1575,8 @@ options! {
     dep_info_omit_d_target: bool = (false, parse_bool, [TRACKED],
         "in dep-info output, omit targets for tracking dependencies of the dep-info files \
         themselves (default: no)"),
+    direct_access_external_data: Option<bool> = (None, parse_opt_bool, [TRACKED],
+        "Direct or use GOT indirect to reference external data symbols"),
     dual_proc_macros: bool = (false, parse_bool, [TRACKED],
         "load proc macros for both target and host, but only link to the target (default: no)"),
     dump_dep_graph: bool = (false, parse_bool, [UNTRACKED],
@@ -1948,7 +1953,7 @@ written to standard error output)"),
         "translate remapped paths into local paths when possible (default: yes)"),
     trap_unreachable: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "generate trap instructions for unreachable intrinsics (default: use target setting, usually yes)"),
-    treat_err_as_bug: Option<NonZeroUsize> = (None, parse_treat_err_as_bug, [TRACKED],
+    treat_err_as_bug: Option<NonZero<usize>> = (None, parse_treat_err_as_bug, [TRACKED],
         "treat the `val`th error that occurs as bug (default if not specified: 0 - don't treat errors as bugs. \
         default if specified without a value: 1 - treat the first error as bug)"),
     trim_diagnostic_paths: bool = (true, parse_bool, [UNTRACKED],

@@ -1,4 +1,7 @@
-use rustc_errors::{Applicability, Diagnostic, DiagnosticBuilder};
+#![allow(rustc::diagnostic_outside_of_impl)]
+#![allow(rustc::untranslatable_diagnostic)]
+
+use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, Ty};
 use rustc_mir_dataflow::move_paths::{LookupResult, MovePathIndex};
@@ -288,7 +291,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         &mut self,
         place: Place<'tcx>,
         span: Span,
-    ) -> DiagnosticBuilder<'a> {
+    ) -> DiagnosticBuilder<'tcx> {
         let description = if place.projection.len() == 1 {
             format!("static item {}", self.describe_any_place(place.as_ref()))
         } else {
@@ -310,7 +313,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         deref_target_place: Place<'tcx>,
         span: Span,
         use_spans: Option<UseSpans<'tcx>>,
-    ) -> DiagnosticBuilder<'a> {
+    ) -> DiagnosticBuilder<'tcx> {
         // Inspect the type of the content behind the
         // borrow to provide feedback about why this
         // was a move rather than a copy.
@@ -434,7 +437,12 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         err
     }
 
-    fn add_move_hints(&self, error: GroupedMoveError<'tcx>, err: &mut Diagnostic, span: Span) {
+    fn add_move_hints(
+        &self,
+        error: GroupedMoveError<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
+        span: Span,
+    ) {
         match error {
             GroupedMoveError::MovesFromPlace { mut binds_to, move_from, .. } => {
                 self.add_borrow_suggestions(err, span);
@@ -445,12 +453,15 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                         None => "value".to_string(),
                     };
 
-                    err.subdiagnostic(crate::session_diagnostics::TypeNoCopy::Label {
-                        is_partial_move: false,
-                        ty: place_ty,
-                        place: &place_desc,
-                        span,
-                    });
+                    err.subdiagnostic(
+                        self.dcx(),
+                        crate::session_diagnostics::TypeNoCopy::Label {
+                            is_partial_move: false,
+                            ty: place_ty,
+                            place: &place_desc,
+                            span,
+                        },
+                    );
                 } else {
                     binds_to.sort();
                     binds_to.dedup();
@@ -472,14 +483,17 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                     Some(desc) => format!("`{desc}`"),
                     None => "value".to_string(),
                 };
-                err.subdiagnostic(crate::session_diagnostics::TypeNoCopy::Label {
-                    is_partial_move: false,
-                    ty: place_ty,
-                    place: &place_desc,
-                    span,
-                });
+                err.subdiagnostic(
+                    self.dcx(),
+                    crate::session_diagnostics::TypeNoCopy::Label {
+                        is_partial_move: false,
+                        ty: place_ty,
+                        place: &place_desc,
+                        span,
+                    },
+                );
 
-                use_spans.args_subdiag(err, |args_span| {
+                use_spans.args_subdiag(self.dcx(), err, |args_span| {
                     crate::session_diagnostics::CaptureArgLabel::MoveOutPlace {
                         place: place_desc,
                         args_span,
@@ -491,7 +505,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         }
     }
 
-    fn add_borrow_suggestions(&self, err: &mut Diagnostic, span: Span) {
+    fn add_borrow_suggestions(&self, err: &mut DiagnosticBuilder<'_>, span: Span) {
         match self.infcx.tcx.sess.source_map().span_to_snippet(span) {
             Ok(snippet) if snippet.starts_with('*') => {
                 err.span_suggestion_verbose(
@@ -512,7 +526,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         }
     }
 
-    fn add_move_error_suggestions(&self, err: &mut Diagnostic, binds_to: &[Local]) {
+    fn add_move_error_suggestions(&self, err: &mut DiagnosticBuilder<'_>, binds_to: &[Local]) {
         let mut suggestions: Vec<(Span, String, String)> = Vec::new();
         for local in binds_to {
             let bind_to = &self.body.local_decls[*local];
@@ -564,7 +578,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         }
     }
 
-    fn add_move_error_details(&self, err: &mut Diagnostic, binds_to: &[Local]) {
+    fn add_move_error_details(&self, err: &mut DiagnosticBuilder<'_>, binds_to: &[Local]) {
         for (j, local) in binds_to.iter().enumerate() {
             let bind_to = &self.body.local_decls[*local];
             let binding_span = bind_to.source_info.span;
@@ -577,12 +591,15 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
 
             if binds_to.len() == 1 {
                 let place_desc = &format!("`{}`", self.local_names[*local].unwrap());
-                err.subdiagnostic(crate::session_diagnostics::TypeNoCopy::Label {
-                    is_partial_move: false,
-                    ty: bind_to.ty,
-                    place: place_desc,
-                    span: binding_span,
-                });
+                err.subdiagnostic(
+                    self.dcx(),
+                    crate::session_diagnostics::TypeNoCopy::Label {
+                        is_partial_move: false,
+                        ty: bind_to.ty,
+                        place: place_desc,
+                        span: binding_span,
+                    },
+                );
             }
         }
 
@@ -598,7 +615,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
     /// expansion of a packed struct.
     /// Such errors happen because derive macro expansions shy away from taking
     /// references to the struct's fields since doing so would be undefined behaviour
-    fn add_note_for_packed_struct_derive(&self, err: &mut Diagnostic, local: Local) {
+    fn add_note_for_packed_struct_derive(&self, err: &mut DiagnosticBuilder<'_>, local: Local) {
         let local_place: PlaceRef<'tcx> = local.into();
         let local_ty = local_place.ty(self.body.local_decls(), self.infcx.tcx).ty.peel_refs();
 

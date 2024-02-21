@@ -291,12 +291,16 @@ pub use crate::node_id::{NodeId, CRATE_NODE_ID, DUMMY_NODE_ID};
 #[derive(Copy, Clone, PartialEq, Eq, Encodable, Decodable, Debug)]
 pub struct TraitBoundModifiers {
     pub constness: BoundConstness,
+    pub asyncness: BoundAsyncness,
     pub polarity: BoundPolarity,
 }
 
 impl TraitBoundModifiers {
-    pub const NONE: Self =
-        Self { constness: BoundConstness::Never, polarity: BoundPolarity::Positive };
+    pub const NONE: Self = Self {
+        constness: BoundConstness::Never,
+        asyncness: BoundAsyncness::Normal,
+        polarity: BoundPolarity::Positive,
+    };
 }
 
 /// The AST represents all type param bounds as types.
@@ -1842,7 +1846,7 @@ pub enum LitKind {
     /// A boolean literal (`true`, `false`).
     Bool(bool),
     /// Placeholder for a literal that wasn't well-formed in some way.
-    Err,
+    Err(ErrorGuaranteed),
 }
 
 impl LitKind {
@@ -1889,7 +1893,7 @@ impl LitKind {
             | LitKind::Int(_, LitIntType::Unsuffixed)
             | LitKind::Float(_, LitFloatType::Unsuffixed)
             | LitKind::Bool(..)
-            | LitKind::Err => false,
+            | LitKind::Err(_) => false,
         }
     }
 }
@@ -2103,9 +2107,9 @@ pub enum TyKind {
     /// A tuple (`(A, B, C, D,...)`).
     Tup(ThinVec<P<Ty>>),
     /// An anonymous struct type i.e. `struct { foo: Type }`
-    AnonStruct(ThinVec<FieldDef>),
+    AnonStruct(NodeId, ThinVec<FieldDef>),
     /// An anonymous union type i.e. `union { bar: Type }`
-    AnonUnion(ThinVec<FieldDef>),
+    AnonUnion(NodeId, ThinVec<FieldDef>),
     /// A path (`module::module::...::Type`), optionally
     /// "qualified", e.g., `<Vec<T> as SomeTrait>::SomeType`.
     ///
@@ -2132,10 +2136,12 @@ pub enum TyKind {
     ImplicitSelf,
     /// A macro in the type position.
     MacCall(P<MacCall>),
-    /// Placeholder for a kind that has failed to be defined.
-    Err,
     /// Placeholder for a `va_list`.
     CVarArgs,
+    /// Sometimes we need a dummy value when no error has occurred.
+    Dummy,
+    /// Placeholder for a kind that has failed to be defined.
+    Err(ErrorGuaranteed),
 }
 
 impl TyKind {
@@ -2156,6 +2162,10 @@ impl TyKind {
         } else {
             None
         }
+    }
+
+    pub fn is_anon_adt(&self) -> bool {
+        matches!(self, TyKind::AnonStruct(..) | TyKind::AnonUnion(..))
     }
 }
 
@@ -2558,6 +2568,25 @@ impl BoundConstness {
             Self::Never => "",
             Self::Always(_) => "const",
             Self::Maybe(_) => "~const",
+        }
+    }
+}
+
+/// The asyncness of a trait bound.
+#[derive(Copy, Clone, PartialEq, Eq, Encodable, Decodable, Debug)]
+#[derive(HashStable_Generic)]
+pub enum BoundAsyncness {
+    /// `Type: Trait`
+    Normal,
+    /// `Type: async Trait`
+    Async(Span),
+}
+
+impl BoundAsyncness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "",
+            Self::Async(_) => "async",
         }
     }
 }
@@ -3300,7 +3329,7 @@ mod size_asserts {
     static_assert_size!(ForeignItem, 96);
     static_assert_size!(ForeignItemKind, 24);
     static_assert_size!(GenericArg, 24);
-    static_assert_size!(GenericBound, 72);
+    static_assert_size!(GenericBound, 88);
     static_assert_size!(Generics, 40);
     static_assert_size!(Impl, 136);
     static_assert_size!(Item, 136);

@@ -448,22 +448,6 @@ mod prim_unit {}
 #[doc(hidden)]
 impl () {}
 
-// Fake impl that's only really used for docs.
-#[cfg(doc)]
-#[stable(feature = "rust1", since = "1.0.0")]
-impl Clone for () {
-    fn clone(&self) -> Self {
-        loop {}
-    }
-}
-
-// Fake impl that's only really used for docs.
-#[cfg(doc)]
-#[stable(feature = "rust1", since = "1.0.0")]
-impl Copy for () {
-    // empty
-}
-
 #[rustc_doc_primitive = "pointer"]
 #[doc(alias = "ptr")]
 #[doc(alias = "*")]
@@ -1676,6 +1660,11 @@ mod prim_ref {}
 /// * [`UnwindSafe`]
 /// * [`RefUnwindSafe`]
 ///
+/// Note that while this type implements `PartialEq`, comparing function pointers is unreliable:
+/// pointers to the same function can compare inequal (because functions are duplicated in multiple
+/// codegen units), and pointers to *different* functions can compare equal (since identical
+/// functions can be deduplicated within a codegen unit).
+///
 /// [`Hash`]: hash::Hash
 /// [`Pointer`]: fmt::Pointer
 /// [`UnwindSafe`]: panic::UnwindSafe
@@ -1690,23 +1679,3 @@ mod prim_fn {}
 // See src/librustdoc/passes/collect_trait_impls.rs:collect_trait_impls
 #[doc(hidden)]
 impl<Ret, T> fn(T) -> Ret {}
-
-// Fake impl that's only really used for docs.
-#[cfg(doc)]
-#[stable(feature = "rust1", since = "1.0.0")]
-#[doc(fake_variadic)]
-/// This trait is implemented on function pointers with any number of arguments.
-impl<Ret, T> Clone for fn(T) -> Ret {
-    fn clone(&self) -> Self {
-        loop {}
-    }
-}
-
-// Fake impl that's only really used for docs.
-#[cfg(doc)]
-#[stable(feature = "rust1", since = "1.0.0")]
-#[doc(fake_variadic)]
-/// This trait is implemented on function pointers with any number of arguments.
-impl<Ret, T> Copy for fn(T) -> Ret {
-    // empty
-}

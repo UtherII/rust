@@ -1,5 +1,5 @@
-// compile-flags: -Zverbose-internals
-// edition:2021
+//@ compile-flags: -Zverbose-internals
+//@ edition:2021
 
 #![feature(async_closure)]
 
@@ -8,7 +8,7 @@ fn main() {
     //~^ NOTE the expected `async` closure body
     let () = x();
     //~^ ERROR mismatched types
-    //~| NOTE this expression has type `{static main::{closure#0}::{closure#0} upvar_tys=
+    //~| NOTE this expression has type `{static main::{closure#0}::{closure#0}<
     //~| NOTE expected `async` closure body, found `()`
-    //~| NOTE expected `async` closure body `{static main::{closure#0}::{closure#0}
+    //~| NOTE expected `async` closure body `{static main::{closure#0}::{closure#0}<
 }

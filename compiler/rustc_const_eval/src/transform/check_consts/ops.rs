@@ -93,6 +93,9 @@ pub struct FnCallNonConst<'tcx> {
 }
 
 impl<'tcx> NonConstOp<'tcx> for FnCallNonConst<'tcx> {
+    // FIXME: make this translatable
+    #[allow(rustc::diagnostic_outside_of_impl)]
+    #[allow(rustc::untranslatable_diagnostic)]
     fn build_error(&self, ccx: &ConstCx<'_, 'tcx>, _: Span) -> DiagnosticBuilder<'tcx> {
         let FnCallNonConst { caller, callee, args, span, call_source, feature } = *self;
         let ConstCx { tcx, param_env, .. } = *ccx;
@@ -131,7 +134,7 @@ impl<'tcx> NonConstOp<'tcx> for FnCallNonConst<'tcx> {
                         // FIXME(effects) revisit this
                         if !tcx.is_const_trait_impl_raw(data.impl_def_id) {
                             let span = tcx.def_span(data.impl_def_id);
-                            err.subdiagnostic(errors::NonConstImplNote { span });
+                            err.subdiagnostic(tcx.dcx(), errors::NonConstImplNote { span });
                         }
                     }
                 }
@@ -321,6 +324,8 @@ impl<'tcx> NonConstOp<'tcx> for FnCallUnstable {
             .dcx()
             .create_err(errors::UnstableConstFn { span, def_path: ccx.tcx.def_path_str(def_id) });
 
+        // FIXME: make this translatable
+        #[allow(rustc::untranslatable_diagnostic)]
         if ccx.is_const_stable_const_fn() {
             err.help("const-stable functions can only call other const-stable functions");
         } else if ccx.tcx.sess.is_nightly_build() {
@@ -409,11 +414,6 @@ impl<'tcx> NonConstOp<'tcx> for TransientCellBorrow {
     fn status_in_item(&self, _: &ConstCx<'_, 'tcx>) -> Status {
         Status::Unstable(sym::const_refs_to_cell)
     }
-    fn importance(&self) -> DiagnosticImportance {
-        // The cases that cannot possibly work will already emit a `CellBorrow`, so we should
-        // not additionally emit a feature gate error if activating the feature gate won't work.
-        DiagnosticImportance::Secondary
-    }
     fn build_error(&self, ccx: &ConstCx<'_, 'tcx>, span: Span) -> DiagnosticBuilder<'tcx> {
         ccx.tcx
             .sess
@@ -427,6 +427,11 @@ impl<'tcx> NonConstOp<'tcx> for TransientCellBorrow {
 /// it in the future for static items.
 pub struct CellBorrow;
 impl<'tcx> NonConstOp<'tcx> for CellBorrow {
+    fn importance(&self) -> DiagnosticImportance {
+        // Most likely the code will try to do mutation with these borrows, which
+        // triggers its own errors. Only show this one if that does not happen.
+        DiagnosticImportance::Secondary
+    }
     fn build_error(&self, ccx: &ConstCx<'_, 'tcx>, span: Span) -> DiagnosticBuilder<'tcx> {
         // FIXME: Maybe a more elegant solution to this if else case
         if let hir::ConstContext::Static(_) = ccx.const_kind() {
@@ -459,8 +464,8 @@ impl<'tcx> NonConstOp<'tcx> for MutBorrow {
     }
 
     fn importance(&self) -> DiagnosticImportance {
-        // If there were primary errors (like non-const function calls), do not emit further
-        // errors about mutable references.
+        // Most likely the code will try to do mutation with these borrows, which
+        // triggers its own errors. Only show this one if that does not happen.
         DiagnosticImportance::Secondary
     }
 
@@ -580,16 +585,23 @@ impl<'tcx> NonConstOp<'tcx> for StaticAccess {
         if let hir::ConstContext::Static(_) = ccx.const_kind() {
             Status::Allowed
         } else {
-            Status::Forbidden
+            Status::Unstable(sym::const_refs_to_static)
         }
     }
 
     fn build_error(&self, ccx: &ConstCx<'_, 'tcx>, span: Span) -> DiagnosticBuilder<'tcx> {
-        ccx.dcx().create_err(errors::StaticAccessErr {
+        let mut err = feature_err(
+            &ccx.tcx.sess,
+            sym::const_refs_to_static,
             span,
-            kind: ccx.const_kind(),
-            teach: ccx.tcx.sess.teach(E0013).then_some(()),
-        })
+            format!("referencing statics in {}s is unstable", ccx.const_kind(),),
+        );
+        // FIXME: make this translatable
+        #[allow(rustc::untranslatable_diagnostic)]
+        err
+            .note("`static` and `const` variables can refer to other `const` variables. A `const` variable, however, cannot refer to a `static` variable.")
+            .help("to fix this, the value can be extracted to a `const` and then used.");
+        err
     }
 }
 
@@ -598,7 +610,7 @@ impl<'tcx> NonConstOp<'tcx> for StaticAccess {
 pub struct ThreadLocalAccess;
 impl<'tcx> NonConstOp<'tcx> for ThreadLocalAccess {
     fn build_error(&self, ccx: &ConstCx<'_, 'tcx>, span: Span) -> DiagnosticBuilder<'tcx> {
-        ccx.dcx().create_err(errors::NonConstOpErr { span })
+        ccx.dcx().create_err(errors::ThreadLocalAccessErr { span })
     }
 }
 
