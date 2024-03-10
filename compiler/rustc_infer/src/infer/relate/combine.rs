@@ -1,4 +1,6 @@
-//! There are four type combiners: [Equate], [Sub], [Lub], and [Glb].
+//! There are four type combiners: [TypeRelating], [Lub], and [Glb],
+//! and `NllTypeRelating` in rustc_borrowck, which is only used for NLL.
+//!
 //! Each implements the trait [TypeRelation] and contains methods for
 //! combining two instances of various things and yielding a new instance.
 //! These combiner methods always yield a `Result<T>`. To relate two
@@ -15,17 +17,11 @@
 //!
 //! On success, the  LUB/GLB operations return the appropriate bound. The
 //! return value of `Equate` or `Sub` shouldn't really be used.
-//!
-//! ## Contravariance
-//!
-//! We explicitly track which argument is expected using
-//! [TypeRelation::a_is_expected], so when dealing with contravariance
-//! this should be correctly updated.
 
-use super::equate::Equate;
 use super::glb::Glb;
 use super::lub::Lub;
-use super::sub::Sub;
+use super::type_relating::TypeRelating;
+use super::StructurallyRelateAliases;
 use crate::infer::{DefineOpaqueTypes, InferCtxt, TypeTrace};
 use crate::traits::{Obligation, PredicateObligations};
 use rustc_middle::infer::canonical::OriginalQueryValues;
@@ -40,7 +36,6 @@ use rustc_span::Span;
 pub struct CombineFields<'infcx, 'tcx> {
     pub infcx: &'infcx InferCtxt<'tcx>,
     pub trace: TypeTrace<'tcx>,
-    pub cause: Option<ty::relate::Cause>,
     pub param_env: ty::ParamEnv<'tcx>,
     pub obligations: PredicateObligations<'tcx>,
     pub define_opaque_types: DefineOpaqueTypes,
@@ -56,7 +51,6 @@ impl<'tcx> InferCtxt<'tcx> {
     where
         R: ObligationEmittingRelation<'tcx>,
     {
-        let a_is_expected = relation.a_is_expected();
         debug_assert!(!a.has_escaping_bound_vars());
         debug_assert!(!b.has_escaping_bound_vars());
 
@@ -67,20 +61,20 @@ impl<'tcx> InferCtxt<'tcx> {
                     .borrow_mut()
                     .int_unification_table()
                     .unify_var_var(a_id, b_id)
-                    .map_err(|e| int_unification_error(a_is_expected, e))?;
+                    .map_err(|e| int_unification_error(true, e))?;
                 Ok(a)
             }
             (&ty::Infer(ty::IntVar(v_id)), &ty::Int(v)) => {
-                self.unify_integral_variable(a_is_expected, v_id, IntType(v))
+                self.unify_integral_variable(true, v_id, IntType(v))
             }
             (&ty::Int(v), &ty::Infer(ty::IntVar(v_id))) => {
-                self.unify_integral_variable(!a_is_expected, v_id, IntType(v))
+                self.unify_integral_variable(false, v_id, IntType(v))
             }
             (&ty::Infer(ty::IntVar(v_id)), &ty::Uint(v)) => {
-                self.unify_integral_variable(a_is_expected, v_id, UintType(v))
+                self.unify_integral_variable(true, v_id, UintType(v))
             }
             (&ty::Uint(v), &ty::Infer(ty::IntVar(v_id))) => {
-                self.unify_integral_variable(!a_is_expected, v_id, UintType(v))
+                self.unify_integral_variable(false, v_id, UintType(v))
             }
 
             // Relate floating-point variables to other types
@@ -89,14 +83,14 @@ impl<'tcx> InferCtxt<'tcx> {
                     .borrow_mut()
                     .float_unification_table()
                     .unify_var_var(a_id, b_id)
-                    .map_err(|e| float_unification_error(a_is_expected, e))?;
+                    .map_err(|e| float_unification_error(true, e))?;
                 Ok(a)
             }
             (&ty::Infer(ty::FloatVar(v_id)), &ty::Float(v)) => {
-                self.unify_float_variable(a_is_expected, v_id, v)
+                self.unify_float_variable(true, v_id, v)
             }
             (&ty::Float(v), &ty::Infer(ty::FloatVar(v_id))) => {
-                self.unify_float_variable(!a_is_expected, v_id, v)
+                self.unify_float_variable(false, v_id, v)
             }
 
             // We don't expect `TyVar` or `Fresh*` vars at this point with lazy norm.
@@ -116,13 +110,20 @@ impl<'tcx> InferCtxt<'tcx> {
             }
 
             (_, ty::Alias(..)) | (ty::Alias(..), _) if self.next_trait_solver() => {
-                relation.register_type_relate_obligation(a, b);
-                Ok(a)
+                match relation.structurally_relate_aliases() {
+                    StructurallyRelateAliases::Yes => {
+                        ty::relate::structurally_relate_tys(relation, a, b)
+                    }
+                    StructurallyRelateAliases::No => {
+                        relation.register_type_relate_obligation(a, b);
+                        Ok(a)
+                    }
+                }
             }
 
             // All other cases of inference are errors
             (&ty::Infer(_), _) | (_, &ty::Infer(_)) => {
-                Err(TypeError::Sorts(ty::relate::expected_found(relation, a, b)))
+                Err(TypeError::Sorts(ty::relate::expected_found(a, b)))
             }
 
             // During coherence, opaque types should be treated as *possibly*
@@ -220,12 +221,12 @@ impl<'tcx> InferCtxt<'tcx> {
             }
 
             (ty::ConstKind::Infer(InferConst::Var(vid)), _) => {
-                self.instantiate_const_var(relation, relation.a_is_expected(), vid, b)?;
+                self.instantiate_const_var(relation, true, vid, b)?;
                 Ok(b)
             }
 
             (_, ty::ConstKind::Infer(InferConst::Var(vid))) => {
-                self.instantiate_const_var(relation, !relation.a_is_expected(), vid, a)?;
+                self.instantiate_const_var(relation, false, vid, a)?;
                 Ok(a)
             }
 
@@ -240,19 +241,24 @@ impl<'tcx> InferCtxt<'tcx> {
             (ty::ConstKind::Unevaluated(..), _) | (_, ty::ConstKind::Unevaluated(..))
                 if self.tcx.features().generic_const_exprs || self.next_trait_solver() =>
             {
-                let (a, b) = if relation.a_is_expected() { (a, b) } else { (b, a) };
+                match relation.structurally_relate_aliases() {
+                    StructurallyRelateAliases::No => {
+                        relation.register_predicates([if self.next_trait_solver() {
+                            ty::PredicateKind::AliasRelate(
+                                a.into(),
+                                b.into(),
+                                ty::AliasRelationDirection::Equate,
+                            )
+                        } else {
+                            ty::PredicateKind::ConstEquate(a, b)
+                        }]);
 
-                relation.register_predicates([if self.next_trait_solver() {
-                    ty::PredicateKind::AliasRelate(
-                        a.into(),
-                        b.into(),
-                        ty::AliasRelationDirection::Equate,
-                    )
-                } else {
-                    ty::PredicateKind::ConstEquate(a, b)
-                }]);
-
-                Ok(b)
+                        Ok(b)
+                    }
+                    StructurallyRelateAliases::Yes => {
+                        ty::relate::structurally_relate_consts(relation, a, b)
+                    }
+                }
             }
             _ => ty::relate::structurally_relate_consts(relation, a, b),
         }
@@ -303,20 +309,27 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
         self.infcx.tcx
     }
 
-    pub fn equate<'a>(&'a mut self, a_is_expected: bool) -> Equate<'a, 'infcx, 'tcx> {
-        Equate::new(self, a_is_expected)
+    pub fn equate<'a>(
+        &'a mut self,
+        structurally_relate_aliases: StructurallyRelateAliases,
+    ) -> TypeRelating<'a, 'infcx, 'tcx> {
+        TypeRelating::new(self, structurally_relate_aliases, ty::Invariant)
     }
 
-    pub fn sub<'a>(&'a mut self, a_is_expected: bool) -> Sub<'a, 'infcx, 'tcx> {
-        Sub::new(self, a_is_expected)
+    pub fn sub<'a>(&'a mut self) -> TypeRelating<'a, 'infcx, 'tcx> {
+        TypeRelating::new(self, StructurallyRelateAliases::No, ty::Covariant)
     }
 
-    pub fn lub<'a>(&'a mut self, a_is_expected: bool) -> Lub<'a, 'infcx, 'tcx> {
-        Lub::new(self, a_is_expected)
+    pub fn sup<'a>(&'a mut self) -> TypeRelating<'a, 'infcx, 'tcx> {
+        TypeRelating::new(self, StructurallyRelateAliases::No, ty::Contravariant)
     }
 
-    pub fn glb<'a>(&'a mut self, a_is_expected: bool) -> Glb<'a, 'infcx, 'tcx> {
-        Glb::new(self, a_is_expected)
+    pub fn lub<'a>(&'a mut self) -> Lub<'a, 'infcx, 'tcx> {
+        Lub::new(self)
+    }
+
+    pub fn glb<'a>(&'a mut self) -> Glb<'a, 'infcx, 'tcx> {
+        Glb::new(self)
     }
 
     pub fn register_obligations(&mut self, obligations: PredicateObligations<'tcx>) {
@@ -335,6 +348,11 @@ pub trait ObligationEmittingRelation<'tcx>: TypeRelation<'tcx> {
 
     fn param_env(&self) -> ty::ParamEnv<'tcx>;
 
+    /// Whether aliases should be related structurally. This is pretty much
+    /// always `No` unless you're equating in some specific locations of the
+    /// new solver. See the comments in these use-cases for more details.
+    fn structurally_relate_aliases(&self) -> StructurallyRelateAliases;
+
     /// Register obligations that must hold in order for this relation to hold
     fn register_obligations(&mut self, obligations: PredicateObligations<'tcx>);
 
@@ -343,19 +361,8 @@ pub trait ObligationEmittingRelation<'tcx>: TypeRelation<'tcx> {
     /// be used if control over the obligation causes is required.
     fn register_predicates(&mut self, obligations: impl IntoIterator<Item: ToPredicate<'tcx>>);
 
-    /// Register an obligation that both types must be related to each other according to
-    /// the [`ty::AliasRelationDirection`] given by [`ObligationEmittingRelation::alias_relate_direction`]
-    fn register_type_relate_obligation(&mut self, a: Ty<'tcx>, b: Ty<'tcx>) {
-        self.register_predicates([ty::Binder::dummy(ty::PredicateKind::AliasRelate(
-            a.into(),
-            b.into(),
-            self.alias_relate_direction(),
-        ))]);
-    }
-
-    /// Relation direction emitted for `AliasRelate` predicates, corresponding to the direction
-    /// of the relation.
-    fn alias_relate_direction(&self) -> ty::AliasRelationDirection;
+    /// Register `AliasRelate` obligation(s) that both types must be related to each other.
+    fn register_type_relate_obligation(&mut self, a: Ty<'tcx>, b: Ty<'tcx>);
 }
 
 fn int_unification_error<'tcx>(

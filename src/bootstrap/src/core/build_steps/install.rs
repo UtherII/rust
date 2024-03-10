@@ -13,7 +13,6 @@ use crate::core::builder::{Builder, RunConfig, ShouldRun, Step};
 use crate::core::config::{Config, TargetSelection};
 use crate::utils::helpers::t;
 use crate::utils::tarball::GeneratedTarball;
-use crate::INTERNER;
 use crate::{Compiler, Kind};
 
 #[cfg(target_os = "illumos")]
@@ -159,7 +158,7 @@ macro_rules! install {
        only_hosts: $only_hosts:expr,
        $run_item:block $(, $c:ident)*;)+) => {
         $(
-            #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+            #[derive(Debug, Clone, Hash, PartialEq, Eq)]
         pub struct $name {
             pub compiler: Compiler,
             pub target: TargetSelection,
@@ -291,7 +290,7 @@ install!((self, builder, _config),
     RustcCodegenCranelift, alias = "rustc-codegen-cranelift", Self::should_build(_config), only_hosts: true, {
         if let Some(tarball) = builder.ensure(dist::CodegenBackend {
             compiler: self.compiler,
-            backend: INTERNER.intern_str("cranelift"),
+            backend: "cranelift".to_string(),
         }) {
             install_sh(builder, "rustc-codegen-cranelift", self.compiler.stage, Some(self.target), &tarball);
         } else {
@@ -303,7 +302,7 @@ install!((self, builder, _config),
     };
 );
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Src {
     pub stage: u32,
 }

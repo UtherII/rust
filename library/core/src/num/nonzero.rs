@@ -23,14 +23,18 @@ mod private {
 
 /// A marker trait for primitive types which can be zero.
 ///
-/// This is an implementation detail for [`NonZero<T>`](NonZero) which may disappear or be replaced at any time.
+/// This is an implementation detail for <code>[NonZero]\<T></code> which may disappear or be replaced at any time.
+///
+/// # Safety
+///
+/// Types implementing this trait must be primitves that are valid when zeroed.
 #[unstable(
     feature = "nonzero_internals",
     reason = "implementation detail which may disappear or be replaced at any time",
     issue = "none"
 )]
 #[const_trait]
-pub trait ZeroablePrimitive: Sized + Copy + private::Sealed {}
+pub unsafe trait ZeroablePrimitive: Sized + Copy + private::Sealed {}
 
 macro_rules! impl_zeroable_primitive {
     ($primitive:ty) => {
@@ -46,7 +50,7 @@ macro_rules! impl_zeroable_primitive {
             reason = "implementation detail which may disappear or be replaced at any time",
             issue = "none"
         )]
-        impl const ZeroablePrimitive for $primitive {}
+        unsafe impl const ZeroablePrimitive for $primitive {}
     };
 }
 
@@ -324,8 +328,9 @@ where
                 // SAFETY: The caller guarantees that `n` is non-zero, so this is unreachable.
                 unsafe {
                     intrinsics::assert_unsafe_precondition!(
-                      "NonZero::new_unchecked requires the argument to be non-zero",
-                      () => false,
+                        check_language_ub,
+                        "NonZero::new_unchecked requires the argument to be non-zero",
+                        () => false,
                     );
                     intrinsics::unreachable()
                 }
@@ -363,8 +368,9 @@ where
                 // SAFETY: The caller guarantees that `n` references a value that is non-zero, so this is unreachable.
                 unsafe {
                     intrinsics::assert_unsafe_precondition!(
-                      "NonZero::from_mut_unchecked requires the argument to dereference as non-zero",
-                      () => false,
+                        check_library_ub,
+                        "NonZero::from_mut_unchecked requires the argument to dereference as non-zero",
+                        () => false,
                     );
                     intrinsics::unreachable()
                 }
@@ -507,18 +513,16 @@ macro_rules! nonzero_integer {
             /// Basic usage:
             ///
             /// ```
-            /// #![feature(non_zero_count_ones)]
+            /// #![feature(generic_nonzero, non_zero_count_ones)]
             /// # fn main() { test().unwrap(); }
             /// # fn test() -> Option<()> {
             /// # use std::num::*;
             /// #
-            /// let one = NonZeroU32::new(1)?;
-            /// let three = NonZeroU32::new(3)?;
-            #[doc = concat!("let a = ", stringify!($Ty), "::new(0b100_0000)?;")]
-            #[doc = concat!("let b = ", stringify!($Ty), "::new(0b100_0011)?;")]
+            #[doc = concat!("let a = NonZero::<", stringify!($Int), ">::new(0b100_0000)?;")]
+            #[doc = concat!("let b = NonZero::<", stringify!($Int), ">::new(0b100_0011)?;")]
             ///
-            /// assert_eq!(a.count_ones(), one);
-            /// assert_eq!(b.count_ones(), three);
+            /// assert_eq!(a.count_ones(), NonZero::new(1)?);
+            /// assert_eq!(b.count_ones(), NonZero::new(3)?);
             /// # Some(())
             /// # }
             /// ```
@@ -530,7 +534,7 @@ macro_rules! nonzero_integer {
             #[must_use = "this returns the result of the operation, \
                         without modifying the original"]
             #[inline(always)]
-            pub const fn count_ones(self) -> NonZeroU32 {
+            pub const fn count_ones(self) -> NonZero<u32> {
                 // SAFETY:
                 // `self` is non-zero, which means it has at least one bit set, which means
                 // that the result of `count_ones` is non-zero.

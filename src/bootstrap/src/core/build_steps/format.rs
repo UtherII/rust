@@ -81,7 +81,7 @@ fn update_rustfmt_version(build: &Builder<'_>) {
 }
 
 /// Returns the Rust files modified between the `merge-base` of HEAD and
-/// rust-lang/master and what is now on the disk.
+/// rust-lang/master and what is now on the disk. Does not include removed files.
 ///
 /// Returns `None` if all files should be formatted.
 fn get_modified_rs_files(build: &Builder<'_>) -> Result<Option<Vec<String>>, String> {
@@ -279,8 +279,8 @@ pub fn format(build: &Builder<'_>, check: bool, paths: &[PathBuf]) {
     let thread = std::thread::spawn(move || {
         let mut children = VecDeque::new();
         while let Ok(path) = rx.recv() {
-            // try getting a few more paths from the channel to amortize the overhead of spawning processes
-            let paths: Vec<_> = rx.try_iter().take(7).chain(std::iter::once(path)).collect();
+            // try getting more paths from the channel to amortize the overhead of spawning processes
+            let paths: Vec<_> = rx.try_iter().take(63).chain(std::iter::once(path)).collect();
 
             let child = rustfmt(&src, &rustfmt_path, paths.as_slice(), check);
             children.push_back(child);

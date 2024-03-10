@@ -423,6 +423,10 @@ changelog-branch = "master"
 
 [shortcut]
 
+[mentions."triagebot.toml"]
+message = "`triagebot.toml` has been modified, there may have been changes to the review queue."
+cc = ["@davidtwco", "@wesleywiser"]
+
 [mentions."compiler/rustc_codegen_cranelift"]
 cc = ["@bjorn3"]
 
@@ -661,6 +665,7 @@ compiler-team-contributors = [
     "@Nadrieril",
     "@nnethercote",
     "@fmease",
+    "@fee1-dead",
 ]
 compiler = [
     "compiler-team",
@@ -669,6 +674,12 @@ compiler = [
 libs = [
     "@cuviper",
     "@Mark-Simulacrum",
+    "@m-ou-se",
+    "@Amanieu",
+    "@Nilstrieb",
+    "@workingjubilee",
+    "@joboet",
+    "@jhpratt",
 ]
 bootstrap = [
     "@Mark-Simulacrum",
@@ -806,7 +817,7 @@ project-stable-mir = [
 "/compiler/rustc_type_ir" =                              ["compiler", "types"]
 "/compiler/stable_mir" =                                 ["project-stable-mir"]
 "/library/alloc" =                                       ["libs"]
-"/library/core" =                                        ["libs"]
+"/library/core" =                                        ["libs", "@scottmcm"]
 "/library/panic_abort" =                                 ["libs"]
 "/library/panic_unwind" =                                ["libs"]
 "/library/proc_macro" =                                  ["@petrochenkov"]

@@ -213,6 +213,8 @@ declare_features! (
     (internal, negative_bounds, "1.71.0", None),
     /// Allows using `#[omit_gdb_pretty_printer_section]`.
     (internal, omit_gdb_pretty_printer_section, "1.5.0", None),
+    /// Set the maximum pattern complexity allowed (not limited by default).
+    (internal, pattern_complexity, "CURRENT_RUSTC_VERSION", None),
     /// Allows using `#[prelude_import]` on glob `use` items.
     (internal, prelude_import, "1.2.0", None),
     /// Used to identify crates that contain the profiler runtime.
@@ -259,8 +261,6 @@ declare_features! (
     (internal, needs_panic_runtime, "1.10.0", Some(32837)),
     /// Allows using the `#![panic_runtime]` attribute.
     (internal, panic_runtime, "1.10.0", Some(32837)),
-    /// Allows `extern "platform-intrinsic" { ... }`.
-    (internal, platform_intrinsics, "1.4.0", Some(27731)),
     /// Allows using `#[rustc_allow_const_fn_unstable]`.
     /// This is an attribute on `const fn` for the same
     /// purpose as `#[allow_internal_unstable]`.
@@ -345,6 +345,8 @@ declare_features! (
     (unstable, asm_const, "1.58.0", Some(93332)),
     /// Enables experimental inline assembly support for additional architectures.
     (unstable, asm_experimental_arch, "1.58.0", Some(93335)),
+    /// Allows using `label` operands in inline assembly.
+    (unstable, asm_goto, "CURRENT_RUSTC_VERSION", Some(119364)),
     /// Allows the `may_unwind` option in inline assembly.
     (unstable, asm_unwind, "1.58.0", Some(93334)),
     /// Allows users to enforce equality of associated constants `TraitImpl<AssocConst=3>`.
@@ -373,8 +375,6 @@ declare_features! (
     (unstable, cfg_sanitize, "1.41.0", Some(39699)),
     /// Allows `cfg(sanitizer_cfi_generalize_pointers)` and `cfg(sanitizer_cfi_normalize_integers)`.
     (unstable, cfg_sanitizer_cfi, "1.77.0", Some(89653)),
-    /// Allows `cfg(target_abi = "...")`.
-    (unstable, cfg_target_abi, "1.55.0", Some(80970)),
     /// Allows `cfg(target(abi = "..."))`.
     (unstable, cfg_target_compact, "1.63.0", Some(96901)),
     /// Allows `cfg(target_has_atomic_load_store = "...")`.
@@ -438,8 +438,6 @@ declare_features! (
     (unstable, deprecated_safe, "1.61.0", Some(94978)),
     /// Allows having using `suggestion` in the `#[deprecated]` attribute.
     (unstable, deprecated_suggestion, "1.61.0", Some(94785)),
-    /// Allows using the `#[diagnostic]` attribute tool namespace
-    (unstable, diagnostic_namespace, "1.73.0", Some(111996)),
     /// Controls errors in trait implementations.
     (unstable, do_not_recommend, "1.67.0", Some(51992)),
     /// Tells rustdoc to automatically generate `#[doc(cfg(...))]`.
@@ -518,7 +516,7 @@ declare_features! (
     (unstable, marker_trait_attr, "1.30.0", Some(29864)),
     /// Allows exhaustive pattern matching on types that contain uninhabited types in cases that are
     /// unambiguously sound.
-    (incomplete, min_exhaustive_patterns, "1.77.0", Some(119612)),
+    (unstable, min_exhaustive_patterns, "1.77.0", Some(119612)),
     /// A minimal, sound subset of specialization intended to be used by the
     /// standard library until the soundness issues with specialization
     /// are fixed.

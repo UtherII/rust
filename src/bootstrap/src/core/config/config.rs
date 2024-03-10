@@ -22,6 +22,7 @@ use crate::utils::cache::{Interned, INTERNER};
 use crate::utils::channel::{self, GitInfo};
 use crate::utils::helpers::{exe, output, t};
 use build_helper::exit;
+use build_helper::util::fail;
 use semver::Version;
 use serde::{Deserialize, Deserializer};
 use serde_derive::Deserialize;
@@ -160,6 +161,7 @@ pub struct Config {
     pub vendor: bool,
     pub target_config: HashMap<TargetSelection, Target>,
     pub full_bootstrap: bool,
+    pub bootstrap_cache_path: Option<PathBuf>,
     pub extended: bool,
     pub tools: Option<HashSet<String>>,
     pub sanitizers: bool,
@@ -262,7 +264,7 @@ pub struct Config {
     pub rustc_default_linker: Option<String>,
     pub rust_optimize_tests: bool,
     pub rust_dist_src: bool,
-    pub rust_codegen_backends: Vec<Interned<String>>,
+    pub rust_codegen_backends: Vec<String>,
     pub rust_verify_llvm_ir: bool,
     pub rust_thin_lto_import_instr_limit: Option<u32>,
     pub rust_remap_debuginfo: bool,
@@ -456,6 +458,8 @@ impl std::str::FromStr for RustcLto {
 }
 
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// N.B.: This type is used everywhere, and the entire codebase relies on it being Copy.
+// Making !Copy is highly nontrivial!
 pub struct TargetSelection {
     pub triple: Interned<String>,
     file: Option<Interned<String>>,
@@ -578,7 +582,7 @@ pub struct Target {
     pub wasi_root: Option<PathBuf>,
     pub qemu_rootfs: Option<PathBuf>,
     pub no_std: bool,
-    pub codegen_backends: Option<Vec<Interned<String>>>,
+    pub codegen_backends: Option<Vec<String>>,
 }
 
 impl Target {
@@ -810,8 +814,8 @@ define_config! {
         host: Option<Vec<String>> = "host",
         target: Option<Vec<String>> = "target",
         build_dir: Option<String> = "build-dir",
-        cargo: Option<String> = "cargo",
-        rustc: Option<String> = "rustc",
+        cargo: Option<PathBuf> = "cargo",
+        rustc: Option<PathBuf> = "rustc",
         rustfmt: Option<PathBuf> = "rustfmt",
         docs: Option<bool> = "docs",
         compiler_docs: Option<bool> = "compiler-docs",
@@ -826,6 +830,7 @@ define_config! {
         locked_deps: Option<bool> = "locked-deps",
         vendor: Option<bool> = "vendor",
         full_bootstrap: Option<bool> = "full-bootstrap",
+        bootstrap_cache_path: Option<PathBuf> = "bootstrap-cache-path",
         extended: Option<bool> = "extended",
         tools: Option<HashSet<String>> = "tools",
         verbose: Option<usize> = "verbose",
@@ -1160,7 +1165,7 @@ impl Config {
             channel: "dev".to_string(),
             codegen_tests: true,
             rust_dist_src: true,
-            rust_codegen_backends: vec![INTERNER.intern_str("llvm")],
+            rust_codegen_backends: vec!["llvm".to_owned()],
             deny_warnings: true,
             bindir: "bin".into(),
             dist_include_mingw_linker: true,
@@ -1234,12 +1239,16 @@ impl Config {
         // Infer the rest of the configuration.
 
         // Infer the source directory. This is non-trivial because we want to support a downloaded bootstrap binary,
-        // running on a completely machine from where it was compiled.
+        // running on a completely different machine from where it was compiled.
         let mut cmd = Command::new("git");
-        // NOTE: we cannot support running from outside the repository because the only path we have available
-        // is set at compile time, which can be wrong if bootstrap was downloaded from source.
+        // NOTE: we cannot support running from outside the repository because the only other path we have available
+        // is set at compile time, which can be wrong if bootstrap was downloaded rather than compiled locally.
         // We still support running outside the repository if we find we aren't in a git directory.
-        cmd.arg("rev-parse").arg("--show-toplevel");
+
+        // NOTE: We get a relative path from git to work around an issue on MSYS/mingw. If we used an absolute path,
+        // and end up using MSYS's git rather than git-for-windows, we would get a unix-y MSYS path. But as bootstrap
+        // has already been (kinda-cross-)compiled to Windows land, we require a normal Windows path.
+        cmd.arg("rev-parse").arg("--show-cdup");
         // Discard stderr because we expect this to fail when building from a tarball.
         let output = cmd
             .stderr(std::process::Stdio::null())
@@ -1247,13 +1256,18 @@ impl Config {
             .ok()
             .and_then(|output| if output.status.success() { Some(output) } else { None });
         if let Some(output) = output {
-            let git_root = String::from_utf8(output.stdout).unwrap();
-            // We need to canonicalize this path to make sure it uses backslashes instead of forward slashes.
-            let git_root = PathBuf::from(git_root.trim()).canonicalize().unwrap();
+            let git_root_relative = String::from_utf8(output.stdout).unwrap();
+            // We need to canonicalize this path to make sure it uses backslashes instead of forward slashes,
+            // and to resolve any relative components.
+            let git_root = env::current_dir()
+                .unwrap()
+                .join(PathBuf::from(git_root_relative.trim()))
+                .canonicalize()
+                .unwrap();
             let s = git_root.to_str().unwrap();
 
             // Bootstrap is quite bad at handling /? in front of paths
-            let src = match s.strip_prefix("\\\\?\\") {
+            let git_root = match s.strip_prefix("\\\\?\\") {
                 Some(p) => PathBuf::from(p),
                 None => git_root,
             };
@@ -1263,8 +1277,8 @@ impl Config {
             //
             // NOTE: this implies that downloadable bootstrap isn't supported when the build directory is outside
             // the source directory. We could fix that by setting a variable from all three of python, ./x, and x.ps1.
-            if src.join("src").join("stage0.json").exists() {
-                config.src = src;
+            if git_root.join("src").join("stage0.json").exists() {
+                config.src = git_root;
             }
         } else {
             // We're building from a tarball, not git sources.
@@ -1379,6 +1393,7 @@ impl Config {
             locked_deps,
             vendor,
             full_bootstrap,
+            bootstrap_cache_path,
             extended,
             tools,
             verbose,
@@ -1418,19 +1433,23 @@ impl Config {
 
         config.initial_rustc = if let Some(rustc) = rustc {
             if !flags.skip_stage0_validation {
-                config.check_build_rustc_version(&rustc);
+                config.check_stage0_version(&rustc, "rustc");
             }
-            PathBuf::from(rustc)
+            rustc
         } else {
             config.download_beta_toolchain();
             config.out.join(config.build.triple).join("stage0/bin/rustc")
         };
 
-        config.initial_cargo = cargo
-            .map(|cargo| {
-                t!(PathBuf::from(cargo).canonicalize(), "`initial_cargo` not found on disk")
-            })
-            .unwrap_or_else(|| config.out.join(config.build.triple).join("stage0/bin/cargo"));
+        config.initial_cargo = if let Some(cargo) = cargo {
+            if !flags.skip_stage0_validation {
+                config.check_stage0_version(&cargo, "cargo");
+            }
+            cargo
+        } else {
+            config.download_beta_toolchain();
+            config.out.join(config.build.triple).join("stage0/bin/cargo")
+        };
 
         // NOTE: it's important this comes *after* we set `initial_rustc` just above.
         if config.dry_run() {
@@ -1463,6 +1482,7 @@ impl Config {
         config.reuse = reuse.map(PathBuf::from);
         config.submodules = submodules;
         config.android_ndk = android_ndk;
+        config.bootstrap_cache_path = bootstrap_cache_path;
         set(&mut config.low_priority, low_priority);
         set(&mut config.compiler_docs, compiler_docs);
         set(&mut config.library_docs_private_items, library_docs_private_items);
@@ -1675,7 +1695,7 @@ impl Config {
                         }
                     }
 
-                    INTERNER.intern_str(s)
+                    s.clone()
                 }).collect();
             }
 
@@ -1862,7 +1882,7 @@ impl Config {
                             }
                         }
 
-                        INTERNER.intern_str(s)
+                        s.clone()
                     }).collect());
                 }
 
@@ -2249,7 +2269,7 @@ impl Config {
     }
 
     pub fn llvm_enabled(&self, target: TargetSelection) -> bool {
-        self.codegen_backends(target).contains(&INTERNER.intern_str("llvm"))
+        self.codegen_backends(target).contains(&"llvm".to_owned())
     }
 
     pub fn llvm_libunwind(&self, target: TargetSelection) -> LlvmLibunwind {
@@ -2268,14 +2288,14 @@ impl Config {
         self.submodules.unwrap_or(rust_info.is_managed_git_subrepository())
     }
 
-    pub fn codegen_backends(&self, target: TargetSelection) -> &[Interned<String>] {
+    pub fn codegen_backends(&self, target: TargetSelection) -> &[String] {
         self.target_config
             .get(&target)
             .and_then(|cfg| cfg.codegen_backends.as_deref())
             .unwrap_or(&self.rust_codegen_backends)
     }
 
-    pub fn default_codegen_backend(&self, target: TargetSelection) -> Option<Interned<String>> {
+    pub fn default_codegen_backend(&self, target: TargetSelection) -> Option<String> {
         self.codegen_backends(target).first().cloned()
     }
 
@@ -2286,39 +2306,38 @@ impl Config {
         }
     }
 
-    pub fn check_build_rustc_version(&self, rustc_path: &str) {
+    // check rustc/cargo version is same or lower with 1 apart from the building one
+    pub fn check_stage0_version(&self, program_path: &Path, component_name: &'static str) {
         if self.dry_run() {
             return;
         }
 
-        // check rustc version is same or lower with 1 apart from the building one
-        let mut cmd = Command::new(rustc_path);
-        cmd.arg("--version");
-        let rustc_output = output(&mut cmd)
-            .lines()
-            .next()
-            .unwrap()
-            .split(' ')
-            .nth(1)
-            .unwrap()
-            .split('-')
-            .next()
-            .unwrap()
-            .to_owned();
-        let rustc_version = Version::parse(rustc_output.trim()).unwrap();
+        let stage0_output = output(Command::new(program_path).arg("--version"));
+        let mut stage0_output = stage0_output.lines().next().unwrap().split(' ');
+
+        let stage0_name = stage0_output.next().unwrap();
+        if stage0_name != component_name {
+            fail(&format!(
+                "Expected to find {component_name} at {} but it claims to be {stage0_name}",
+                program_path.display()
+            ));
+        }
+
+        let stage0_version =
+            Version::parse(stage0_output.next().unwrap().split('-').next().unwrap().trim())
+                .unwrap();
         let source_version =
             Version::parse(fs::read_to_string(self.src.join("src/version")).unwrap().trim())
                 .unwrap();
-        if !(source_version == rustc_version
-            || (source_version.major == rustc_version.major
-                && (source_version.minor == rustc_version.minor
-                    || source_version.minor == rustc_version.minor + 1)))
+        if !(source_version == stage0_version
+            || (source_version.major == stage0_version.major
+                && (source_version.minor == stage0_version.minor
+                    || source_version.minor == stage0_version.minor + 1)))
         {
             let prev_version = format!("{}.{}.x", source_version.major, source_version.minor - 1);
-            eprintln!(
-                "Unexpected rustc version: {rustc_version}, we should use {prev_version}/{source_version} to build source with {source_version}"
-            );
-            exit!(1);
+            fail(&format!(
+                "Unexpected {component_name} version: {stage0_version}, we should use {prev_version}/{source_version} to build source with {source_version}"
+            ));
         }
     }
 
@@ -2396,7 +2415,7 @@ impl Config {
                     .last_modified_commit(&["src/llvm-project"], "download-ci-llvm", true)
                     .is_none()
             {
-                // there are some untracked changes in the the given paths.
+                // there are some untracked changes in the given paths.
                 false
             } else {
                 llvm::is_ci_llvm_available(self, asserts)

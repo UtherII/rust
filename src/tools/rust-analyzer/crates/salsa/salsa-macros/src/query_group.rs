@@ -235,13 +235,24 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
 
         queries_with_storage.push(fn_name);
 
+        let tracing = if let QueryStorage::Memoized = query.storage {
+            let s = format!("{trait_name}::{fn_name}");
+            Some(quote! {
+                let _p = tracing::span!(tracing::Level::DEBUG, #s, #(#key_names = tracing::field::debug(&#key_names)),*).entered();
+            })
+        } else {
+            None
+        }
+        .into_iter();
+
         query_fn_definitions.extend(quote! {
             fn #fn_name(&self, #(#key_names: #keys),*) -> #value {
+                #(#tracing),*
                 // Create a shim to force the code to be monomorphized in the
                 // query crate. Our experiments revealed that this makes a big
                 // difference in total compilation time in rust-analyzer, though
                 // it's not totally obvious why that should be.
-                fn __shim(db: &(dyn #trait_name + '_),  #(#key_names: #keys),*) -> #value {
+                fn __shim(db: &(dyn #trait_name + '_), #(#key_names: #keys),*) -> #value {
                     salsa::plumbing::get_query_table::<#qt>(db).get((#(#key_names),*))
                 }
                 __shim(self, #(#key_names),*)
@@ -526,7 +537,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
         fmt_ops.extend(quote! {
             #query_index => {
                 salsa::plumbing::QueryStorageOps::fmt_index(
-                    &*self.#fn_name, db, input, fmt,
+                    &*self.#fn_name, db, input.key_index(), fmt,
                 )
             }
         });
@@ -537,7 +548,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
         maybe_changed_ops.extend(quote! {
             #query_index => {
                 salsa::plumbing::QueryStorageOps::maybe_changed_after(
-                    &*self.#fn_name, db, input, revision
+                    &*self.#fn_name, db, input.key_index(), revision
                 )
             }
         });

@@ -6,8 +6,8 @@ use rustc_ast::{MetaItemKind, NestedMetaItem};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{
-    codes::*, pluralize, report_ambiguity_error, struct_span_code_err, Applicability, DiagCtxt,
-    DiagnosticBuilder, ErrorGuaranteed, MultiSpan, SuggestionStyle,
+    codes::*, pluralize, report_ambiguity_error, struct_span_code_err, Applicability, Diag,
+    DiagCtxt, ErrorGuaranteed, MultiSpan, SuggestionStyle,
 };
 use rustc_feature::BUILTIN_ATTRIBUTES;
 use rustc_hir::def::Namespace::{self, *};
@@ -19,7 +19,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_session::lint::builtin::ABSOLUTE_PATHS_NOT_STARTING_WITH_CRATE;
 use rustc_session::lint::builtin::AMBIGUOUS_GLOB_IMPORTS;
 use rustc_session::lint::builtin::MACRO_EXPANDED_MACRO_EXPORTS_ACCESSED_BY_ABSOLUTE_PATHS;
-use rustc_session::lint::{AmbiguityErrorDiag, BuiltinLintDiagnostics};
+use rustc_session::lint::{AmbiguityErrorDiag, BuiltinLintDiag};
 use rustc_session::Session;
 use rustc_span::edit_distance::find_best_match_for_name;
 use rustc_span::edition::Edition;
@@ -30,7 +30,10 @@ use rustc_span::{BytePos, Span, SyntaxContext};
 use thin_vec::{thin_vec, ThinVec};
 
 use crate::errors::{AddedMacroUse, ChangeImportBinding, ChangeImportBindingSuggestion};
-use crate::errors::{ConsiderAddingADerive, ExplicitUnsafeTraits, MaybeMissingMacroRulesName};
+use crate::errors::{
+    ConsiderAddingADerive, ExplicitUnsafeTraits, MacroDefinedLater, MacroSuggMovePosition,
+    MaybeMissingMacroRulesName,
+};
 use crate::imports::{Import, ImportKind};
 use crate::late::{PatternSource, Rib};
 use crate::{errors as errs, BindingKey};
@@ -135,7 +138,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 CRATE_NODE_ID,
                 span_use,
                 msg,
-                BuiltinLintDiagnostics::MacroExpandedMacroExportsAccessedByAbsolutePaths(span_def),
+                BuiltinLintDiag::MacroExpandedMacroExportsAccessedByAbsolutePaths(span_def),
             );
         }
 
@@ -150,7 +153,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     import.root_id,
                     ambiguity_error.ident.span,
                     diag.msg.to_string(),
-                    BuiltinLintDiagnostics::AmbiguousGlobImports { diag },
+                    BuiltinLintDiag::AmbiguousGlobImports { diag },
                 );
             } else {
                 let mut err = struct_span_code_err!(self.dcx(), diag.span, E0659, "{}", &diag.msg);
@@ -185,7 +188,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     &candidates,
                     if instead { Instead::Yes } else { Instead::No },
                     found_use,
-                    DiagnosticMode::Normal,
+                    DiagMode::Normal,
                     path,
                     "",
                 );
@@ -360,7 +363,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     /// ```
     fn add_suggestion_for_rename_of_use(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         name: Symbol,
         import: Import<'_>,
         binding_span: Span,
@@ -436,7 +439,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     /// as characters expected by span manipulations won't be present.
     fn add_suggestion_for_duplicate_nested_use(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         import: Import<'_>,
         binding_span: Span,
     ) {
@@ -522,7 +525,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             }
         }
 
-        let diag = BuiltinLintDiagnostics::AbsPathWithModule(root_span);
+        let diag = BuiltinLintDiag::AbsPathWithModule(root_span);
         self.lint_buffer.buffer_lint_with_diagnostic(
             ABSOLUTE_PATHS_NOT_STARTING_WITH_CRATE,
             node_id,
@@ -554,15 +557,19 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     ///
     /// This takes the error provided, combines it with the span and any additional spans inside the
     /// error and emits it.
-    pub(crate) fn report_error(&mut self, span: Span, resolution_error: ResolutionError<'a>) {
-        self.into_struct_error(span, resolution_error).emit();
+    pub(crate) fn report_error(
+        &mut self,
+        span: Span,
+        resolution_error: ResolutionError<'a>,
+    ) -> ErrorGuaranteed {
+        self.into_struct_error(span, resolution_error).emit()
     }
 
     pub(crate) fn into_struct_error(
         &mut self,
         span: Span,
         resolution_error: ResolutionError<'a>,
-    ) -> DiagnosticBuilder<'_> {
+    ) -> Diag<'_> {
         match resolution_error {
             ResolutionError::GenericParamsFromOuterItem(outer_res, has_generic_params, def_kind) => {
                 use errs::GenericParamsFromOuterItemLabel as Label;
@@ -716,7 +723,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         &import_suggestions,
                         Instead::No,
                         FoundUse::Yes,
-                        DiagnosticMode::Pattern,
+                        DiagMode::Pattern,
                         vec![],
                         "",
                     );
@@ -1111,7 +1118,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         suggestions.extend(
                             tmp_suggestions
                                 .into_iter()
-                                .filter(|s| use_prelude || this.is_builtin_macro(s.res)),
+                                .filter(|s| use_prelude.into() || this.is_builtin_macro(s.res)),
                         );
                     }
                 }
@@ -1290,10 +1297,20 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     let mut path_segments = path_segments.clone();
                     path_segments.push(ast::PathSegment::from_ident(ident));
 
+                    let alias_import = if let NameBindingKind::Import { import, .. } =
+                        name_binding.kind
+                        && let ImportKind::ExternCrate { source: Some(_), .. } = import.kind
+                        && import.parent_scope.expansion == parent_scope.expansion
+                    {
+                        true
+                    } else {
+                        false
+                    };
+
                     let is_extern_crate_that_also_appears_in_prelude =
                         name_binding.is_extern_crate() && lookup_ident.span.at_least_rust_2018();
 
-                    if !is_extern_crate_that_also_appears_in_prelude {
+                    if !is_extern_crate_that_also_appears_in_prelude || alias_import {
                         // add the module to the lookup
                         if seen_modules.insert(module.def_id()) {
                             if via_import { &mut worklist_via_import } else { &mut worklist }
@@ -1399,7 +1416,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
 
     pub(crate) fn unresolved_macro_suggestions(
         &mut self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         macro_kind: MacroKind,
         parent_scope: &ParentScope<'a>,
         ident: Ident,
@@ -1427,7 +1444,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             &import_suggestions,
             Instead::No,
             found_use,
-            DiagnosticMode::Normal,
+            DiagMode::Normal,
             vec![],
             "",
         );
@@ -1440,6 +1457,24 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         if macro_kind == MacroKind::Derive && (ident.name == sym::Send || ident.name == sym::Sync) {
             err.subdiagnostic(self.dcx(), ExplicitUnsafeTraits { span: ident.span, ident });
             return;
+        }
+
+        let unused_macro = self.unused_macros.iter().find_map(|(def_id, (_, unused_ident))| {
+            if unused_ident.name == ident.name {
+                Some((def_id.clone(), unused_ident.clone()))
+            } else {
+                None
+            }
+        });
+
+        if let Some((def_id, unused_ident)) = unused_macro {
+            let scope = self.local_macro_def_scopes[&def_id];
+            let parent_nearest = parent_scope.module.nearest_parent_mod();
+            if Some(parent_nearest) == scope.opt_def_id() {
+                err.subdiagnostic(self.dcx(), MacroDefinedLater { span: unused_ident.span });
+                err.subdiagnostic(self.dcx(), MacroSuggMovePosition { span: ident.span, ident });
+                return;
+            }
         }
 
         if self.macro_names.contains(&ident.normalize_to_macros_2_0()) {
@@ -1515,7 +1550,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
 
     pub(crate) fn add_typo_suggestion(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         suggestion: Option<TypoSuggestion>,
         span: Span,
     ) -> bool {
@@ -1571,9 +1606,10 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         {
             // When the suggested binding change would be from `x` to `_x`, suggest changing the
             // original binding definition instead. (#60164)
-            (span, snippet, ", consider changing it")
+            let post = format!(", consider renaming `{}` into `{snippet}`", suggestion.candidate);
+            (span, snippet, post)
         } else {
-            (span, suggestion.candidate.to_string(), "")
+            (span, suggestion.candidate.to_string(), String::new())
         };
         let msg = match suggestion.target {
             SuggestionTarget::SimilarlyNamed => format!(
@@ -1700,7 +1736,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     }
 
     fn report_privacy_error(&mut self, privacy_error: &PrivacyError<'a>) {
-        let PrivacyError { ident, binding, outermost_res, parent_scope, dedup_span } =
+        let PrivacyError { ident, binding, outermost_res, parent_scope, single_nested, dedup_span } =
             *privacy_error;
 
         let res = binding.res();
@@ -1739,7 +1775,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 &import_suggestions,
                 Instead::Yes,
                 FoundUse::Yes,
-                DiagnosticMode::Import,
+                DiagMode::Import { append: single_nested },
                 vec![],
                 "",
             );
@@ -2461,7 +2497,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     /// Finds a cfg-ed out item inside `module` with the matching name.
     pub(crate) fn find_cfg_stripped(
         &mut self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         segment: &Symbol,
         module: DefId,
     ) {
@@ -2660,21 +2696,25 @@ enum FoundUse {
 }
 
 /// Whether a binding is part of a pattern or a use statement. Used for diagnostics.
-pub(crate) enum DiagnosticMode {
+pub(crate) enum DiagMode {
     Normal,
     /// The binding is part of a pattern
     Pattern,
     /// The binding is part of a use statement
-    Import,
+    Import {
+        /// `true` mean add the tips afterward for case `use a::{b,c}`,
+        /// rather than replacing within.
+        append: bool,
+    },
 }
 
 pub(crate) fn import_candidates(
     tcx: TyCtxt<'_>,
-    err: &mut DiagnosticBuilder<'_>,
+    err: &mut Diag<'_>,
     // This is `None` if all placement locations are inside expansions
     use_placement_span: Option<Span>,
     candidates: &[ImportSuggestion],
-    mode: DiagnosticMode,
+    mode: DiagMode,
     append: &str,
 ) {
     show_candidates(
@@ -2690,19 +2730,21 @@ pub(crate) fn import_candidates(
     );
 }
 
+type PathString<'a> = (String, &'a str, Option<DefId>, &'a Option<String>, bool);
+
 /// When an entity with a given name is not available in scope, we search for
 /// entities with that name in all crates. This method allows outputting the
 /// results of this search in a programmer-friendly way. If any entities are
 /// found and suggested, returns `true`, otherwise returns `false`.
 fn show_candidates(
     tcx: TyCtxt<'_>,
-    err: &mut DiagnosticBuilder<'_>,
+    err: &mut Diag<'_>,
     // This is `None` if all placement locations are inside expansions
     use_placement_span: Option<Span>,
     candidates: &[ImportSuggestion],
     instead: Instead,
     found_use: FoundUse,
-    mode: DiagnosticMode,
+    mode: DiagMode,
     path: Vec<Segment>,
     append: &str,
 ) -> bool {
@@ -2710,10 +2752,8 @@ fn show_candidates(
         return false;
     }
 
-    let mut accessible_path_strings: Vec<(String, &str, Option<DefId>, &Option<String>, bool)> =
-        Vec::new();
-    let mut inaccessible_path_strings: Vec<(String, &str, Option<DefId>, &Option<String>, bool)> =
-        Vec::new();
+    let mut accessible_path_strings: Vec<PathString<'_>> = Vec::new();
+    let mut inaccessible_path_strings: Vec<PathString<'_>> = Vec::new();
 
     candidates.iter().for_each(|c| {
         if c.accessible {
@@ -2763,7 +2803,7 @@ fn show_candidates(
             };
 
         let instead = if let Instead::Yes = instead { " instead" } else { "" };
-        let mut msg = if let DiagnosticMode::Pattern = mode {
+        let mut msg = if let DiagMode::Pattern = mode {
             format!(
                 "if you meant to match on {kind}{instead}{name}, use the full path in the pattern",
             )
@@ -2775,9 +2815,18 @@ fn show_candidates(
             err.note(note.clone());
         }
 
+        let append_candidates = |msg: &mut String, accessible_path_strings: Vec<PathString<'_>>| {
+            msg.push(':');
+
+            for candidate in accessible_path_strings {
+                msg.push('\n');
+                msg.push_str(&candidate.0);
+            }
+        };
+
         if let Some(span) = use_placement_span {
             let (add_use, trailing) = match mode {
-                DiagnosticMode::Pattern => {
+                DiagMode::Pattern => {
                     err.span_suggestions(
                         span,
                         msg,
@@ -2786,14 +2835,14 @@ fn show_candidates(
                     );
                     return true;
                 }
-                DiagnosticMode::Import => ("", ""),
-                DiagnosticMode::Normal => ("use ", ";\n"),
+                DiagMode::Import { .. } => ("", ""),
+                DiagMode::Normal => ("use ", ";\n"),
             };
             for candidate in &mut accessible_path_strings {
                 // produce an additional newline to separate the new use statement
                 // from the directly following item.
                 let additional_newline = if let FoundUse::No = found_use
-                    && let DiagnosticMode::Normal = mode
+                    && let DiagMode::Normal = mode
                 {
                     "\n"
                 } else {
@@ -2803,13 +2852,22 @@ fn show_candidates(
                     format!("{add_use}{}{append}{trailing}{additional_newline}", &candidate.0);
             }
 
-            err.span_suggestions_with_style(
-                span,
-                msg,
-                accessible_path_strings.into_iter().map(|a| a.0),
-                Applicability::MaybeIncorrect,
-                SuggestionStyle::ShowAlways,
-            );
+            match mode {
+                DiagMode::Import { append: true, .. } => {
+                    append_candidates(&mut msg, accessible_path_strings);
+                    err.span_help(span, msg);
+                }
+                _ => {
+                    err.span_suggestions_with_style(
+                        span,
+                        msg,
+                        accessible_path_strings.into_iter().map(|a| a.0),
+                        Applicability::MaybeIncorrect,
+                        SuggestionStyle::ShowAlways,
+                    );
+                }
+            }
+
             if let [first, .., last] = &path[..] {
                 let sp = first.ident.span.until(last.ident.span);
                 // Our suggestion is empty, so make sure the span is not empty (or we'd ICE).
@@ -2824,26 +2882,17 @@ fn show_candidates(
                 }
             }
         } else {
-            msg.push(':');
-
-            for candidate in accessible_path_strings {
-                msg.push('\n');
-                msg.push_str(&candidate.0);
-            }
-
+            append_candidates(&mut msg, accessible_path_strings);
             err.help(msg);
         }
         true
-    } else if !(inaccessible_path_strings.is_empty() || matches!(mode, DiagnosticMode::Import)) {
-        let prefix = if let DiagnosticMode::Pattern = mode {
-            "you might have meant to match on "
-        } else {
-            ""
-        };
+    } else if !(inaccessible_path_strings.is_empty() || matches!(mode, DiagMode::Import { .. })) {
+        let prefix =
+            if let DiagMode::Pattern = mode { "you might have meant to match on " } else { "" };
         if let [(name, descr, def_id, note, _)] = &inaccessible_path_strings[..] {
             let msg = format!(
                 "{prefix}{descr} `{name}`{} exists but is inaccessible",
-                if let DiagnosticMode::Pattern = mode { ", which" } else { "" }
+                if let DiagMode::Pattern = mode { ", which" } else { "" }
             );
 
             if let Some(local_def_id) = def_id.and_then(|did| did.as_local()) {

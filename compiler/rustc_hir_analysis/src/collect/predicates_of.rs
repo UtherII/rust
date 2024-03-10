@@ -339,7 +339,7 @@ fn compute_bidirectional_outlives_predicates<'tcx>(
     predicates: &mut Vec<(ty::Clause<'tcx>, Span)>,
 ) {
     for param in opaque_own_params {
-        let orig_lifetime = tcx.map_rpit_lifetime_to_fn_lifetime(param.def_id.expect_local());
+        let orig_lifetime = tcx.map_opaque_lifetime_to_parent_lifetime(param.def_id.expect_local());
         if let ty::ReEarlyParam(..) = *orig_lifetime {
             let dup_lifetime = ty::Region::new_early_param(
                 tcx,
@@ -640,16 +640,30 @@ pub(super) fn implied_predicates_with_filter(
 
     // Now require that immediate supertraits are converted, which will, in
     // turn, reach indirect supertraits, so we detect cycles now instead of
-    // overflowing during elaboration.
-    if matches!(filter, PredicateFilter::SelfOnly) {
-        for &(pred, span) in implied_bounds {
-            debug!("superbound: {:?}", pred);
-            if let ty::ClauseKind::Trait(bound) = pred.kind().skip_binder()
-                && bound.polarity == ty::ImplPolarity::Positive
-            {
-                tcx.at(span).super_predicates_of(bound.def_id());
+    // overflowing during elaboration. Same for implied predicates, which
+    // make sure we walk into associated type bounds.
+    match filter {
+        PredicateFilter::SelfOnly => {
+            for &(pred, span) in implied_bounds {
+                debug!("superbound: {:?}", pred);
+                if let ty::ClauseKind::Trait(bound) = pred.kind().skip_binder()
+                    && bound.polarity == ty::ImplPolarity::Positive
+                {
+                    tcx.at(span).super_predicates_of(bound.def_id());
+                }
             }
         }
+        PredicateFilter::SelfAndAssociatedTypeBounds => {
+            for &(pred, span) in implied_bounds {
+                debug!("superbound: {:?}", pred);
+                if let ty::ClauseKind::Trait(bound) = pred.kind().skip_binder()
+                    && bound.polarity == ty::ImplPolarity::Positive
+                {
+                    tcx.at(span).implied_predicates_of(bound.def_id());
+                }
+            }
+        }
+        _ => {}
     }
 
     ty::GenericPredicates { parent: None, predicates: implied_bounds }

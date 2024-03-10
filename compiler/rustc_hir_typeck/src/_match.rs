@@ -1,6 +1,6 @@
 use crate::coercion::{AsCoercionSite, CoerceMany};
 use crate::{Diverges, Expectation, FnCtxt, Needs};
-use rustc_errors::{Applicability, DiagnosticBuilder};
+use rustc_errors::{Applicability, Diag};
 use rustc_hir::{
     self as hir,
     def::{CtorOf, DefKind, Res},
@@ -177,7 +177,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     fn explain_never_type_coerced_to_unit(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         arm: &hir::Arm<'tcx>,
         arm_ty: Ty<'tcx>,
         prior_arm: Option<(Option<hir::HirId>, Ty<'tcx>, Span)>,
@@ -209,7 +209,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     fn suggest_removing_semicolon_for_coerce(
         &self,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
         expr: &hir::Expr<'tcx>,
         arm_ty: Ty<'tcx>,
         prior_arm: Option<(Option<hir::HirId>, Ty<'tcx>, Span)>,
@@ -303,7 +303,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// `if let PAT = EXPR {}` expressions that could be turned into `let PAT = EXPR;`.
     fn explain_if_expr(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         ret_reason: Option<(Span, String)>,
         if_span: Span,
         cond_expr: &'tcx hir::Expr<'tcx>,
@@ -401,12 +401,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             {
                 // check that the `if` expr without `else` is the fn body's expr
                 if expr.span == sp {
-                    return self.get_fn_decl(hir_id).and_then(|(_, fn_decl, _)| {
+                    return self.get_fn_decl(hir_id).map(|(_, fn_decl, _)| {
                         let (ty, span) = match fn_decl.output {
                             hir::FnRetTy::DefaultReturn(span) => ("()".to_string(), span),
                             hir::FnRetTy::Return(ty) => (ty_to_string(ty), ty.span),
                         };
-                        Some((span, format!("expected `{ty}` because of this return type")))
+                        (span, format!("expected `{ty}` because of this return type"))
                     });
                 }
             }

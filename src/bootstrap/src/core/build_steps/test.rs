@@ -26,7 +26,6 @@ use crate::core::builder::{Builder, Compiler, Kind, RunConfig, ShouldRun, Step};
 use crate::core::config::flags::get_completion;
 use crate::core::config::flags::Subcommand;
 use crate::core::config::TargetSelection;
-use crate::utils::cache::{Interned, INTERNER};
 use crate::utils::exec::BootstrapCommand;
 use crate::utils::helpers::{
     self, add_link_lib_path, add_rustdoc_cargo_linker_args, dylib_path, dylib_path_var,
@@ -38,9 +37,9 @@ use crate::{envify, CLang, DocTests, GitRepo, Mode};
 
 const ADB_TEST_DIR: &str = "/data/local/tmp/work";
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateBootstrap {
-    path: Interned<PathBuf>,
+    path: PathBuf,
     host: TargetSelection,
 }
 
@@ -58,7 +57,7 @@ impl Step for CrateBootstrap {
 
     fn make_run(run: RunConfig<'_>) {
         for path in run.paths {
-            let path = INTERNER.intern_path(path.assert_single_path().path.clone());
+            let path = path.assert_single_path().path.clone();
             run.builder.ensure(CrateBootstrap { host: run.target, path });
         }
     }
@@ -86,7 +85,7 @@ impl Step for CrateBootstrap {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Linkcheck {
     host: TargetSelection,
 }
@@ -179,7 +178,7 @@ fn check_if_tidy_is_installed() -> bool {
         .map_or(false, |status| status.success())
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HtmlCheck {
     target: TargetSelection,
 }
@@ -220,7 +219,7 @@ impl Step for HtmlCheck {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cargotest {
     stage: u32,
     host: TargetSelection,
@@ -266,7 +265,7 @@ impl Step for Cargotest {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cargo {
     stage: u32,
     host: TargetSelection,
@@ -327,7 +326,7 @@ impl Step for Cargo {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RustAnalyzer {
     stage: u32,
     host: TargetSelection,
@@ -386,7 +385,7 @@ impl Step for RustAnalyzer {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Rustfmt {
     stage: u32,
     host: TargetSelection,
@@ -433,7 +432,7 @@ impl Step for Rustfmt {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RustDemangler {
     stage: u32,
     host: TargetSelection,
@@ -492,7 +491,7 @@ impl Step for RustDemangler {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Miri {
     stage: u32,
     host: TargetSelection,
@@ -623,7 +622,7 @@ impl Step for Miri {
 
         // miri tests need to know about the stage sysroot
         cargo.env("MIRI_SYSROOT", &miri_sysroot);
-        cargo.env("MIRI_HOST_SYSROOT", sysroot);
+        cargo.env("MIRI_HOST_SYSROOT", &sysroot);
         cargo.env("MIRI", &miri);
         if builder.config.locked_deps {
             // enforce lockfiles
@@ -699,7 +698,7 @@ impl Step for Miri {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompiletestTest {
     host: TargetSelection,
 }
@@ -747,7 +746,7 @@ impl Step for CompiletestTest {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Clippy {
     stage: u32,
     host: TargetSelection,
@@ -815,7 +814,7 @@ fn path_for_cargo(builder: &Builder<'_>, compiler: Compiler) -> OsString {
     env::join_paths(iter::once(path).chain(env::split_paths(&old_path))).expect("")
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct RustdocTheme {
     pub compiler: Compiler,
 }
@@ -852,7 +851,7 @@ impl Step for RustdocTheme {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct RustdocJSStd {
     pub target: TargetSelection,
 }
@@ -912,7 +911,7 @@ impl Step for RustdocJSStd {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct RustdocJSNotStd {
     pub target: TargetSelection,
     pub compiler: Compiler,
@@ -966,7 +965,7 @@ fn get_browser_ui_test_version(npm: &Path) -> Option<String> {
         .or_else(|| get_browser_ui_test_version_inner(npm, true))
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct RustdocGUI {
     pub target: TargetSelection,
     pub compiler: Compiler,
@@ -1060,7 +1059,7 @@ impl Step for RustdocGUI {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tidy;
 
 impl Step for Tidy {
@@ -1151,7 +1150,7 @@ HELP: to skip test's attempt to check tidiness, pass `--skip src/tools/tidy` to 
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExpandYamlAnchors;
 
 impl Step for ExpandYamlAnchors {
@@ -1251,7 +1250,7 @@ macro_rules! test_definitions {
         host: $host:expr,
         compare_mode: $compare_mode:expr
     }) => {
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         pub struct $name {
             pub compiler: Compiler,
             pub target: TargetSelection,
@@ -1294,7 +1293,7 @@ macro_rules! coverage_test_alias {
         default: $default:expr,
         only_hosts: $only_hosts:expr $(,)?
     }) => {
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         pub struct $name {
             pub compiler: Compiler,
             pub target: TargetSelection,
@@ -1325,6 +1324,52 @@ macro_rules! coverage_test_alias {
             }
         }
     };
+}
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, Ord, PartialOrd)]
+pub struct RunMakeSupport {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for RunMakeSupport {
+    type Output = PathBuf;
+    const DEFAULT: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.never()
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        let compiler = run.builder.compiler(run.builder.top_stage, run.build_triple());
+        run.builder.ensure(RunMakeSupport { compiler, target: run.build_triple() });
+    }
+
+    fn run(self, builder: &Builder<'_>) -> PathBuf {
+        builder.ensure(compile::Std::new(self.compiler, self.target));
+
+        let cargo = tool::prepare_tool_cargo(
+            builder,
+            self.compiler,
+            Mode::ToolStd,
+            self.target,
+            "build",
+            "src/tools/run-make-support",
+            SourceType::InTree,
+            &[],
+        );
+
+        let mut cargo = Command::from(cargo);
+        builder.run(&mut cargo);
+
+        let lib_name = "librun_make_support.rlib";
+        let lib = builder.tools_dir(self.compiler).join(&lib_name);
+
+        let cargo_out =
+            builder.cargo_out(self.compiler, Mode::ToolStd, self.target).join(&lib_name);
+        builder.copy(&cargo_out, &lib);
+        lib
+    }
 }
 
 default_test!(Ui { path: "tests/ui", mode: "ui", suite: "ui" });
@@ -1361,7 +1406,40 @@ host_test!(RustdocJson { path: "tests/rustdoc-json", mode: "rustdoc-json", suite
 
 host_test!(Pretty { path: "tests/pretty", mode: "pretty", suite: "pretty" });
 
-default_test!(RunMake { path: "tests/run-make", mode: "run-make", suite: "run-make" });
+// Special-handling is needed for `run-make`, so don't use `default_test` for defining `RunMake`
+// tests.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct RunMake {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for RunMake {
+    type Output = ();
+    const DEFAULT: bool = true;
+    const ONLY_HOSTS: bool = false;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.suite_path("tests/run-make")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        let compiler = run.builder.compiler(run.builder.top_stage, run.build_triple());
+        run.builder.ensure(RunMakeSupport { compiler, target: run.build_triple() });
+        run.builder.ensure(RunMake { compiler, target: run.target });
+    }
+
+    fn run(self, builder: &Builder<'_>) {
+        builder.ensure(Compiletest {
+            compiler: self.compiler,
+            target: self.target,
+            mode: "run-make",
+            suite: "run-make",
+            path: "tests/run-make",
+            compare_mode: None,
+        });
+    }
+}
 
 host_test!(RunMakeFullDeps {
     path: "tests/run-make-fulldeps",
@@ -1376,7 +1454,7 @@ default_test!(Assembly { path: "tests/assembly", mode: "assembly", suite: "assem
 ///
 /// Each individual mode also has its own alias that will run the tests in
 /// just that mode.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Coverage {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1438,7 +1516,7 @@ host_test!(CoverageRunRustdoc {
 });
 
 // For the mir-opt suite we do not use macros, as we need custom behavior when blessing.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MirOpt {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1494,7 +1572,7 @@ impl Step for MirOpt {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Compiletest {
     compiler: Compiler,
     target: TargetSelection,
@@ -1567,8 +1645,10 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
         }
 
         if suite == "debuginfo" {
-            builder
-                .ensure(dist::DebuggerScripts { sysroot: builder.sysroot(compiler), host: target });
+            builder.ensure(dist::DebuggerScripts {
+                sysroot: builder.sysroot(compiler).to_path_buf(),
+                host: target,
+            });
         }
 
         // Also provide `rust_test_helpers` for the host.
@@ -2142,7 +2222,7 @@ impl BookTest {
 macro_rules! test_book {
     ($($name:ident, $path:expr, $book_name:expr, default=$default:expr;)+) => {
         $(
-            #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+            #[derive(Debug, Clone, PartialEq, Eq, Hash)]
             pub struct $name {
                 compiler: Compiler,
             }
@@ -2187,7 +2267,7 @@ test_book!(
     EditionGuide, "src/doc/edition-guide", "edition-guide", default=false;
 );
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ErrorIndex {
     compiler: Compiler,
 }
@@ -2264,7 +2344,7 @@ fn markdown_test(builder: &Builder<'_>, compiler: Compiler, markdown: &Path) -> 
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RustcGuide;
 
 impl Step for RustcGuide {
@@ -2299,7 +2379,7 @@ impl Step for RustcGuide {
 pub struct CrateLibrustc {
     compiler: Compiler,
     target: TargetSelection,
-    crates: Vec<Interned<String>>,
+    crates: Vec<String>,
 }
 
 impl Step for CrateLibrustc {
@@ -2315,8 +2395,11 @@ impl Step for CrateLibrustc {
         let builder = run.builder;
         let host = run.build_triple();
         let compiler = builder.compiler_for(builder.top_stage, host, host);
-        let crates =
-            run.paths.iter().map(|p| builder.crate_paths[&p.assert_single_path().path]).collect();
+        let crates = run
+            .paths
+            .iter()
+            .map(|p| builder.crate_paths[&p.assert_single_path().path].clone())
+            .collect();
 
         builder.ensure(CrateLibrustc { compiler, target: run.target, crates });
     }
@@ -2339,7 +2422,7 @@ impl Step for CrateLibrustc {
 fn run_cargo_test<'a>(
     cargo: impl Into<Command>,
     libtest_args: &[&str],
-    crates: &[Interned<String>],
+    crates: &[String],
     primary_crate: &str,
     description: impl Into<Option<&'a str>>,
     compiler: Compiler,
@@ -2370,7 +2453,7 @@ fn run_cargo_test<'a>(
 fn prepare_cargo_test(
     cargo: impl Into<Command>,
     libtest_args: &[&str],
-    crates: &[Interned<String>],
+    crates: &[String],
     primary_crate: &str,
     compiler: Compiler,
     target: TargetSelection,
@@ -2398,7 +2481,7 @@ fn prepare_cargo_test(
         DocTests::No => {
             let krate = &builder
                 .crates
-                .get(&INTERNER.intern_str(primary_crate))
+                .get(primary_crate)
                 .unwrap_or_else(|| panic!("missing crate {primary_crate}"));
             if krate.has_lib {
                 cargo.arg("--lib");
@@ -2408,7 +2491,7 @@ fn prepare_cargo_test(
         DocTests::Yes => {}
     }
 
-    for &krate in crates {
+    for krate in crates {
         cargo.arg("-p").arg(krate);
     }
 
@@ -2450,7 +2533,7 @@ pub struct Crate {
     pub compiler: Compiler,
     pub target: TargetSelection,
     pub mode: Mode,
-    pub crates: Vec<Interned<String>>,
+    pub crates: Vec<String>,
 }
 
 impl Step for Crate {
@@ -2465,8 +2548,11 @@ impl Step for Crate {
         let builder = run.builder;
         let host = run.build_triple();
         let compiler = builder.compiler_for(builder.top_stage, host, host);
-        let crates =
-            run.paths.iter().map(|p| builder.crate_paths[&p.assert_single_path().path]).collect();
+        let crates = run
+            .paths
+            .iter()
+            .map(|p| builder.crate_paths[&p.assert_single_path().path].clone())
+            .collect();
 
         builder.ensure(Crate { compiler, target: run.target, mode: Mode::Std, crates });
     }
@@ -2537,7 +2623,7 @@ impl Step for Crate {
 }
 
 /// Rustdoc is special in various ways, which is why this step is different from `Crate`.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateRustdoc {
     host: TargetSelection,
 }
@@ -2628,7 +2714,7 @@ impl Step for CrateRustdoc {
         run_cargo_test(
             cargo,
             &[],
-            &[INTERNER.intern_str("rustdoc:0.0.0")],
+            &["rustdoc:0.0.0".to_string()],
             "rustdoc",
             "rustdoc",
             compiler,
@@ -2638,7 +2724,7 @@ impl Step for CrateRustdoc {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateRustdocJsonTypes {
     host: TargetSelection,
 }
@@ -2689,7 +2775,7 @@ impl Step for CrateRustdocJsonTypes {
         run_cargo_test(
             cargo,
             libtest_args,
-            &[INTERNER.intern_str("rustdoc-json-types")],
+            &["rustdoc-json-types".to_string()],
             "rustdoc-json-types",
             "rustdoc-json-types",
             compiler,
@@ -2708,7 +2794,7 @@ impl Step for CrateRustdocJsonTypes {
 /// QEMU we have to build our own tools so we've got conditional dependencies
 /// on those programs as well. Note that the remote test client is built for
 /// the build target (us) and the server is built for the target.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RemoteCopyLibs {
     compiler: Compiler,
     target: TargetSelection,
@@ -2754,7 +2840,7 @@ impl Step for RemoteCopyLibs {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Distcheck;
 
 impl Step for Distcheck {
@@ -2824,7 +2910,7 @@ impl Step for Distcheck {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Bootstrap;
 
 impl Step for Bootstrap {
@@ -2876,7 +2962,7 @@ impl Step for Bootstrap {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TierCheck {
     pub compiler: Compiler,
 }
@@ -2926,7 +3012,7 @@ impl Step for TierCheck {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LintDocs {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -2959,7 +3045,7 @@ impl Step for LintDocs {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RustInstaller;
 
 impl Step for RustInstaller {
@@ -3020,7 +3106,7 @@ impl Step for RustInstaller {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TestHelpers {
     pub target: TargetSelection,
 }
@@ -3115,8 +3201,7 @@ impl Step for CodegenCranelift {
             return;
         }
 
-        if !builder.config.codegen_backends(run.target).contains(&INTERNER.intern_str("cranelift"))
-        {
+        if !builder.config.codegen_backends(run.target).contains(&"cranelift".to_owned()) {
             builder.info("cranelift not in rust.codegen-backends. skipping");
             return;
         }
@@ -3240,7 +3325,7 @@ impl Step for CodegenGCC {
             return;
         }
 
-        if !builder.config.codegen_backends(run.target).contains(&INTERNER.intern_str("gcc")) {
+        if !builder.config.codegen_backends(run.target).contains(&"gcc".to_owned()) {
             builder.info("gcc not in rust.codegen-backends. skipping");
             return;
         }
@@ -3315,7 +3400,6 @@ impl Step for CodegenGCC {
             .arg("--out-dir")
             .arg(builder.stage_out(compiler, Mode::ToolRustc).join("cg_gcc"))
             .arg("--release")
-            .arg("--no-default-features")
             .arg("--mini-tests")
             .arg("--std-tests");
         cargo.args(builder.config.test_args());

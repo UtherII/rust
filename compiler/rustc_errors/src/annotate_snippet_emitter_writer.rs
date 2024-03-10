@@ -9,8 +9,8 @@ use crate::emitter::FileWithAnnotatedLines;
 use crate::snippet::Line;
 use crate::translation::{to_fluent_args, Translate};
 use crate::{
-    CodeSuggestion, Diagnostic, DiagnosticMessage, Emitter, ErrCode, FluentBundle,
-    LazyFallbackBundle, Level, MultiSpan, Style, SubDiagnostic,
+    CodeSuggestion, DiagInner, DiagMessage, Emitter, ErrCode, FluentBundle, LazyFallbackBundle,
+    Level, MultiSpan, Style, Subdiag,
 };
 use annotate_snippets::{Annotation, AnnotationType, Renderer, Slice, Snippet, SourceAnnotation};
 use rustc_data_structures::sync::Lrc;
@@ -44,8 +44,8 @@ impl Translate for AnnotateSnippetEmitter {
 
 impl Emitter for AnnotateSnippetEmitter {
     /// The entry point for the diagnostics generation
-    fn emit_diagnostic(&mut self, mut diag: Diagnostic) {
-        let fluent_args = to_fluent_args(diag.args());
+    fn emit_diagnostic(&mut self, mut diag: DiagInner) {
+        let fluent_args = to_fluent_args(diag.args.iter());
 
         let mut suggestions = diag.suggestions.unwrap_or(vec![]);
         self.primary_span_formatted(&mut diag.span, &mut suggestions, &fluent_args);
@@ -82,7 +82,7 @@ fn source_string(file: Lrc<SourceFile>, line: &Line) -> String {
     file.get_line(line.line_index - 1).map(|a| a.to_string()).unwrap_or_default()
 }
 
-/// Maps `Diagnostic::Level` to `snippet::AnnotationType`
+/// Maps `diagnostic::Level` to `snippet::AnnotationType`
 fn annotation_type_for_level(level: Level) -> AnnotationType {
     match level {
         Level::Bug | Level::Fatal | Level::Error | Level::DelayedBug => AnnotationType::Error,
@@ -125,11 +125,11 @@ impl AnnotateSnippetEmitter {
     fn emit_messages_default(
         &mut self,
         level: &Level,
-        messages: &[(DiagnosticMessage, Style)],
+        messages: &[(DiagMessage, Style)],
         args: &FluentArgs<'_>,
         code: &Option<ErrCode>,
         msp: &MultiSpan,
-        _children: &[SubDiagnostic],
+        _children: &[Subdiag],
         _suggestions: &[CodeSuggestion],
     ) {
         let message = self.translate_messages(messages, args);

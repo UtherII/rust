@@ -192,7 +192,7 @@ impl fmt::Display for RangeEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MaybeInfiniteInt {
     NegInfinity,
-    /// Encoded value. DO NOT CONSTRUCT BY HAND; use `new_finite`.
+    /// Encoded value. DO NOT CONSTRUCT BY HAND; use `new_finite_{int,uint}`.
     #[non_exhaustive]
     Finite(u128),
     /// The integer after `u128::MAX`. We need it to represent `x..=u128::MAX` as an exclusive range.
@@ -229,25 +229,22 @@ impl MaybeInfiniteInt {
     }
 
     /// Note: this will not turn a finite value into an infinite one or vice-versa.
-    pub fn minus_one(self) -> Self {
+    pub fn minus_one(self) -> Option<Self> {
         match self {
-            Finite(n) => match n.checked_sub(1) {
-                Some(m) => Finite(m),
-                None => panic!("Called `MaybeInfiniteInt::minus_one` on 0"),
-            },
-            JustAfterMax => Finite(u128::MAX),
-            x => x,
+            Finite(n) => n.checked_sub(1).map(Finite),
+            JustAfterMax => Some(Finite(u128::MAX)),
+            x => Some(x),
         }
     }
     /// Note: this will not turn a finite value into an infinite one or vice-versa.
-    pub fn plus_one(self) -> Self {
+    pub fn plus_one(self) -> Option<Self> {
         match self {
             Finite(n) => match n.checked_add(1) {
-                Some(m) => Finite(m),
-                None => JustAfterMax,
+                Some(m) => Some(Finite(m)),
+                None => Some(JustAfterMax),
             },
-            JustAfterMax => panic!("Called `MaybeInfiniteInt::plus_one` on u128::MAX+1"),
-            x => x,
+            JustAfterMax => None,
+            x => Some(x),
         }
     }
 }
@@ -268,18 +265,24 @@ impl IntRange {
     pub fn is_singleton(&self) -> bool {
         // Since `lo` and `hi` can't be the same `Infinity` and `plus_one` never changes from finite
         // to infinite, this correctly only detects ranges that contain exacly one `Finite(x)`.
-        self.lo.plus_one() == self.hi
+        self.lo.plus_one() == Some(self.hi)
     }
 
+    /// Construct a singleton range.
+    /// `x` must be a `Finite(_)` value.
     #[inline]
     pub fn from_singleton(x: MaybeInfiniteInt) -> IntRange {
-        IntRange { lo: x, hi: x.plus_one() }
+        // `unwrap()` is ok on a finite value
+        IntRange { lo: x, hi: x.plus_one().unwrap() }
     }
 
+    /// Construct a range with these boundaries.
+    /// `lo` must not be `PosInfinity` or `JustAfterMax`. `hi` must not be `NegInfinity`.
+    /// If `end` is `Included`, `hi` must also not be `JustAfterMax`.
     #[inline]
     pub fn from_range(lo: MaybeInfiniteInt, mut hi: MaybeInfiniteInt, end: RangeEnd) -> IntRange {
         if end == RangeEnd::Included {
-            hi = hi.plus_one();
+            hi = hi.plus_one().unwrap();
         }
         if lo >= hi {
             // This should have been caught earlier by E0030.
@@ -688,24 +691,23 @@ pub enum Constructor<Cx: TypeCx> {
     /// Fake extra constructor for constructors that are not seen in the matrix, as explained at the
     /// top of the file.
     Missing,
+    /// Fake extra constructor that indicates and empty field that is private. When we encounter one
+    /// we skip the column entirely so we don't observe its emptiness. Only used for specialization.
+    PrivateUninhabited,
 }
 
 impl<Cx: TypeCx> Clone for Constructor<Cx> {
     fn clone(&self) -> Self {
         match self {
             Constructor::Struct => Constructor::Struct,
-            Constructor::Variant(idx) => Constructor::Variant(idx.clone()),
+            Constructor::Variant(idx) => Constructor::Variant(*idx),
             Constructor::Ref => Constructor::Ref,
-            Constructor::Slice(slice) => Constructor::Slice(slice.clone()),
+            Constructor::Slice(slice) => Constructor::Slice(*slice),
             Constructor::UnionField => Constructor::UnionField,
-            Constructor::Bool(b) => Constructor::Bool(b.clone()),
-            Constructor::IntRange(range) => Constructor::IntRange(range.clone()),
-            Constructor::F32Range(lo, hi, end) => {
-                Constructor::F32Range(lo.clone(), hi.clone(), end.clone())
-            }
-            Constructor::F64Range(lo, hi, end) => {
-                Constructor::F64Range(lo.clone(), hi.clone(), end.clone())
-            }
+            Constructor::Bool(b) => Constructor::Bool(*b),
+            Constructor::IntRange(range) => Constructor::IntRange(*range),
+            Constructor::F32Range(lo, hi, end) => Constructor::F32Range(lo.clone(), *hi, *end),
+            Constructor::F64Range(lo, hi, end) => Constructor::F64Range(lo.clone(), *hi, *end),
             Constructor::Str(value) => Constructor::Str(value.clone()),
             Constructor::Opaque(inner) => Constructor::Opaque(inner.clone()),
             Constructor::Or => Constructor::Or,
@@ -713,6 +715,7 @@ impl<Cx: TypeCx> Clone for Constructor<Cx> {
             Constructor::NonExhaustive => Constructor::NonExhaustive,
             Constructor::Hidden => Constructor::Hidden,
             Constructor::Missing => Constructor::Missing,
+            Constructor::PrivateUninhabited => Constructor::PrivateUninhabited,
         }
     }
 }
@@ -767,6 +770,8 @@ impl<Cx: TypeCx> Constructor<Cx> {
             }
             // Wildcards cover anything
             (_, Wildcard) => true,
+            // `PrivateUninhabited` skips everything.
+            (PrivateUninhabited, _) => true,
             // Only a wildcard pattern can match these special constructors.
             (Missing { .. } | NonExhaustive | Hidden, _) => false,
 
@@ -944,7 +949,7 @@ impl<Cx: TypeCx> ConstructorSet<Cx> {
             }
             ConstructorSet::Variants { variants, non_exhaustive } => {
                 let mut seen_set = index::IdxSet::new_empty(variants.len());
-                for idx in seen.iter().map(|c| c.as_variant().unwrap()) {
+                for idx in seen.iter().filter_map(|c| c.as_variant()) {
                     seen_set.insert(idx);
                 }
                 let mut skipped_a_hidden_variant = false;
@@ -973,7 +978,7 @@ impl<Cx: TypeCx> ConstructorSet<Cx> {
             ConstructorSet::Bool => {
                 let mut seen_false = false;
                 let mut seen_true = false;
-                for b in seen.iter().map(|ctor| ctor.as_bool().unwrap()) {
+                for b in seen.iter().filter_map(|ctor| ctor.as_bool()) {
                     if b {
                         seen_true = true;
                     } else {
@@ -993,7 +998,7 @@ impl<Cx: TypeCx> ConstructorSet<Cx> {
             }
             ConstructorSet::Integers { range_1, range_2 } => {
                 let seen_ranges: Vec<_> =
-                    seen.iter().map(|ctor| *ctor.as_int_range().unwrap()).collect();
+                    seen.iter().filter_map(|ctor| ctor.as_int_range()).copied().collect();
                 for (seen, splitted_range) in range_1.split(seen_ranges.iter().cloned()) {
                     match seen {
                         Presence::Unseen => missing.push(IntRange(splitted_range)),
@@ -1010,7 +1015,7 @@ impl<Cx: TypeCx> ConstructorSet<Cx> {
                 }
             }
             ConstructorSet::Slice { array_len, subtype_is_empty } => {
-                let seen_slices = seen.iter().map(|c| c.as_slice().unwrap());
+                let seen_slices = seen.iter().filter_map(|c| c.as_slice());
                 let base_slice = Slice::new(*array_len, VarLen(0, 0));
                 for (seen, splitted_slice) in base_slice.split(seen_slices) {
                     let ctor = Slice(splitted_slice);

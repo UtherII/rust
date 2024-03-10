@@ -49,7 +49,7 @@ use rustc_mir_dataflow::impls::MaybeInitializedPlaces;
 use rustc_mir_dataflow::move_paths::MoveData;
 use rustc_mir_dataflow::ResultsCursor;
 
-use crate::session_diagnostics::{MoveUnsized, SimdShuffleLastConst};
+use crate::session_diagnostics::{MoveUnsized, SimdIntrinsicArgConst};
 use crate::{
     borrow_set::BorrowSet,
     constraints::{OutlivesConstraint, OutlivesConstraintSet},
@@ -1066,7 +1066,6 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                             &cause,
                             param_env,
                             hidden_ty.ty,
-                            true,
                             &mut obligations,
                         )?;
 
@@ -1664,9 +1663,22 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
 
         let func_ty = func.ty(body, self.infcx.tcx);
         if let ty::FnDef(def_id, _) = *func_ty.kind() {
-            if let Some(sym::simd_shuffle) = self.tcx().intrinsic(def_id) {
-                if !matches!(args[2], Spanned { node: Operand::Constant(_), .. }) {
-                    self.tcx().dcx().emit_err(SimdShuffleLastConst { span: term.source_info.span });
+            // Some of the SIMD intrinsics are special: they need a particular argument to be a constant.
+            // (Eventually this should use const-generics, but those are not up for the task yet:
+            // https://github.com/rust-lang/rust/issues/85229.)
+            if let Some(name @ (sym::simd_shuffle | sym::simd_insert | sym::simd_extract)) =
+                self.tcx().intrinsic(def_id).map(|i| i.name)
+            {
+                let idx = match name {
+                    sym::simd_shuffle => 2,
+                    _ => 1,
+                };
+                if !matches!(args[idx], Spanned { node: Operand::Constant(_), .. }) {
+                    self.tcx().dcx().emit_err(SimdIntrinsicArgConst {
+                        span: term.source_info.span,
+                        arg: idx + 1,
+                        intrinsic: name.to_string(),
+                    });
                 }
             }
         }
@@ -1758,8 +1770,8 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 self.assert_iscleanup(body, block_data, real_target, is_cleanup);
                 self.assert_iscleanup_unwind(body, block_data, unwind, is_cleanup);
             }
-            TerminatorKind::InlineAsm { destination, unwind, .. } => {
-                if let Some(target) = destination {
+            TerminatorKind::InlineAsm { ref targets, unwind, .. } => {
+                for &target in targets {
                     self.assert_iscleanup(body, block_data, target, is_cleanup);
                 }
                 self.assert_iscleanup_unwind(body, block_data, unwind, is_cleanup);
@@ -1988,7 +2000,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                     ConstraintCategory::SizedBound,
                 );
             }
-            &Rvalue::NullaryOp(NullOp::DebugAssertions, _) => {}
+            &Rvalue::NullaryOp(NullOp::UbCheck(_), _) => {}
 
             Rvalue::ShallowInitBox(operand, ty) => {
                 self.check_operand(operand, location);

@@ -3,10 +3,10 @@ use crate::astconv::{
     errors::prohibit_assoc_ty_binding, CreateInstantiationsForGenericArgsCtxt, ExplicitLateBound,
     GenericArgCountMismatch, GenericArgCountResult, GenericArgPosition,
 };
-use crate::structured_errors::{GenericArgsInfo, StructuredDiagnostic, WrongNumberOfGenericArgs};
+use crate::structured_errors::{GenericArgsInfo, StructuredDiag, WrongNumberOfGenericArgs};
 use rustc_ast::ast::ParamKindOrd;
 use rustc_errors::{
-    codes::*, struct_span_code_err, Applicability, DiagnosticBuilder, ErrorGuaranteed, MultiSpan,
+    codes::*, struct_span_code_err, Applicability, Diag, ErrorGuaranteed, MultiSpan,
 };
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
@@ -47,7 +47,7 @@ fn generic_arg_mismatch_err(
         }
     }
 
-    let add_braces_suggestion = |arg: &GenericArg<'_>, err: &mut DiagnosticBuilder<'_>| {
+    let add_braces_suggestion = |arg: &GenericArg<'_>, err: &mut Diag<'_>| {
         let suggestions = vec![
             (arg.span().shrink_to_lo(), String::from("{ ")),
             (arg.span().shrink_to_hi(), String::from(" }")),

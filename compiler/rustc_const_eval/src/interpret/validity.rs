@@ -17,8 +17,8 @@ use rustc_middle::mir::interpret::{
     ExpectedKind, InterpError, InvalidMetaKind, Misalignment, PointerKind, Provenance,
     ValidationErrorInfo, ValidationErrorKind, ValidationErrorKind::*,
 };
-use rustc_middle::ty;
 use rustc_middle::ty::layout::{LayoutOf, TyAndLayout};
+use rustc_middle::ty::{self, Ty};
 use rustc_span::symbol::{sym, Symbol};
 use rustc_target::abi::{
     Abi, FieldIdx, Scalar as ScalarAbi, Size, VariantIdx, Variants, WrappingRange,
@@ -146,14 +146,6 @@ impl CtfeValidationMode {
             CtfeValidationMode::Const { allow_immutable_unsafe_cell, .. } => {
                 allow_immutable_unsafe_cell
             }
-        }
-    }
-
-    fn may_contain_mutable_ref(self) -> bool {
-        match self {
-            CtfeValidationMode::Static { mutbl } => mutbl == Mutability::Mut,
-            CtfeValidationMode::Promoted { .. } => false,
-            CtfeValidationMode::Const { .. } => false,
         }
     }
 }
@@ -511,20 +503,19 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                 // If this allocation has size zero, there is no actual mutability here.
                 let (size, _align, _alloc_kind) = self.ecx.get_alloc_info(alloc_id);
                 if size != Size::ZERO {
+                    // Mutable pointer to immutable memory is no good.
                     if ptr_expected_mutbl == Mutability::Mut
                         && alloc_actual_mutbl == Mutability::Not
                     {
                         throw_validation_failure!(self.path, MutableRefToImmutable);
                     }
-                    if ptr_expected_mutbl == Mutability::Mut
-                        && self.ctfe_mode.is_some_and(|c| !c.may_contain_mutable_ref())
-                    {
-                        throw_validation_failure!(self.path, MutableRefInConstOrStatic);
-                    }
-                    if alloc_actual_mutbl == Mutability::Mut
-                        && matches!(self.ctfe_mode, Some(CtfeValidationMode::Const { .. }))
-                    {
-                        throw_validation_failure!(self.path, ConstRefToMutable);
+                    // In a const, everything must be completely immutable.
+                    if matches!(self.ctfe_mode, Some(CtfeValidationMode::Const { .. })) {
+                        if ptr_expected_mutbl == Mutability::Mut
+                            || alloc_actual_mutbl == Mutability::Mut
+                        {
+                            throw_validation_failure!(self.path, ConstRefToMutable);
+                        }
                     }
                 }
                 // Potentially skip recursive check.
@@ -792,7 +783,11 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     }
 
     #[inline]
-    fn visit_box(&mut self, op: &OpTy<'tcx, M::Provenance>) -> InterpResult<'tcx> {
+    fn visit_box(
+        &mut self,
+        _box_ty: Ty<'tcx>,
+        op: &OpTy<'tcx, M::Provenance>,
+    ) -> InterpResult<'tcx> {
         self.check_safe_pointer(op, PointerKind::Box)?;
         Ok(())
     }

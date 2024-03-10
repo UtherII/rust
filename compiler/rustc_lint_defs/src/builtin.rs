@@ -32,7 +32,6 @@ declare_lint_pass! {
         CONFLICTING_REPR_HINTS,
         CONST_EVALUATABLE_UNCHECKED,
         CONST_ITEM_MUTATION,
-        CONST_PATTERNS_WITHOUT_PARTIAL_EQ,
         DEAD_CODE,
         DEPRECATED,
         DEPRECATED_CFG_ATTR_CRATE_TYPE_NAME,
@@ -68,6 +67,7 @@ declare_lint_pass! {
         MISSING_FRAGMENT_SPECIFIER,
         MUST_NOT_SUSPEND,
         NAMED_ARGUMENTS_USED_POSITIONALLY,
+        NON_CONTIGUOUS_RANGE_ENDPOINTS,
         NON_EXHAUSTIVE_OMITTED_PATTERNS,
         ORDER_DEPENDENT_TRAIT_OBJECTS,
         OVERLAPPING_RANGE_ENDPOINTS,
@@ -811,6 +811,36 @@ declare_lint! {
     pub OVERLAPPING_RANGE_ENDPOINTS,
     Warn,
     "detects range patterns with overlapping endpoints"
+}
+
+declare_lint! {
+    /// The `non_contiguous_range_endpoints` lint detects likely off-by-one errors when using
+    /// exclusive [range patterns].
+    ///
+    /// [range patterns]: https://doc.rust-lang.org/nightly/reference/patterns.html#range-patterns
+    ///
+    /// ### Example
+    ///
+    /// ```rust
+    /// # #![feature(exclusive_range_pattern)]
+    /// let x = 123u32;
+    /// match x {
+    ///     0..100 => { println!("small"); }
+    ///     101..1000 => { println!("large"); }
+    ///     _ => { println!("larger"); }
+    /// }
+    /// ```
+    ///
+    /// {{produces}}
+    ///
+    /// ### Explanation
+    ///
+    /// It is likely a mistake to have range patterns in a match expression that miss out a single
+    /// number. Check that the beginning and end values are what you expect, and keep in mind that
+    /// with `..=` the right bound is inclusive, and with `..` it is exclusive.
+    pub NON_CONTIGUOUS_RANGE_ENDPOINTS,
+    Warn,
+    "detects off-by-one errors with exclusive range patterns"
 }
 
 declare_lint! {
@@ -2343,57 +2373,6 @@ declare_lint! {
 }
 
 declare_lint! {
-    /// The `const_patterns_without_partial_eq` lint detects constants that are used in patterns,
-    /// whose type does not implement `PartialEq`.
-    ///
-    /// ### Example
-    ///
-    /// ```rust,compile_fail
-    /// #![deny(const_patterns_without_partial_eq)]
-    ///
-    /// trait EnumSetType {
-    ///    type Repr;
-    /// }
-    ///
-    /// enum Enum8 { }
-    /// impl EnumSetType for Enum8 {
-    ///     type Repr = u8;
-    /// }
-    ///
-    /// #[derive(PartialEq, Eq)]
-    /// struct EnumSet<T: EnumSetType> {
-    ///     __enumset_underlying: T::Repr,
-    /// }
-    ///
-    /// const CONST_SET: EnumSet<Enum8> = EnumSet { __enumset_underlying: 3 };
-    ///
-    /// fn main() {
-    ///     match CONST_SET {
-    ///         CONST_SET => { /* ok */ }
-    ///         _ => panic!("match fell through?"),
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
-    ///
-    /// ### Explanation
-    ///
-    /// Previous versions of Rust accepted constants in patterns, even if those constants' types
-    /// did not have `PartialEq` implemented. The compiler falls back to comparing the value
-    /// field-by-field. In the future we'd like to ensure that pattern matching always
-    /// follows `PartialEq` semantics, so that trait bound will become a requirement for
-    /// matching on constants.
-    pub CONST_PATTERNS_WITHOUT_PARTIAL_EQ,
-    Warn,
-    "constant in pattern does not implement `PartialEq`",
-    @future_incompatible = FutureIncompatibleInfo {
-        reason: FutureIncompatibilityReason::FutureReleaseErrorReportInDeps,
-        reference: "issue #116122 <https://github.com/rust-lang/rust/issues/116122>",
-    };
-}
-
-declare_lint! {
     /// The `ambiguous_associated_items` lint detects ambiguity between
     /// [associated items] and [enum variants].
     ///
@@ -3638,18 +3617,9 @@ declare_lint! {
     /// being validated. Usually these should be rejected as a hard error,
     /// but this lint was introduced to avoid breaking any existing
     /// crates which included them.
-    ///
-    /// This is a [future-incompatible] lint to transition this to a hard
-    /// error in the future. See [issue #82730] for more details.
-    ///
-    /// [issue #82730]: https://github.com/rust-lang/rust/issues/82730
     pub INVALID_DOC_ATTRIBUTES,
-    Warn,
+    Deny,
     "detects invalid `#[doc(...)]` attributes",
-    @future_incompatible = FutureIncompatibleInfo {
-        reason: FutureIncompatibilityReason::FutureReleaseErrorDontReportInDeps,
-        reference: "issue #82730 <https://github.com/rust-lang/rust/issues/82730>",
-    };
 }
 
 declare_lint! {

@@ -1,8 +1,14 @@
+use crate::infer::error_reporting::hir::Path;
+use core::ops::ControlFlow;
 use hir::def::CtorKind;
 use hir::intravisit::{walk_expr, walk_stmt, Visitor};
+use hir::{Local, QPath};
 use rustc_data_structures::fx::FxIndexSet;
-use rustc_errors::{Applicability, DiagnosticBuilder};
+use rustc_errors::{Applicability, Diag};
 use rustc_hir as hir;
+use rustc_hir::def::Res;
+use rustc_hir::MatchSource;
+use rustc_hir::Node;
 use rustc_middle::traits::{
     IfExpressionCause, MatchExpressionArmCause, ObligationCause, ObligationCauseCode,
     StatementAsExpression,
@@ -76,7 +82,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
 
     pub(super) fn suggest_boxing_for_return_impl_trait(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         return_sp: Span,
         arm_spans: impl Iterator<Item = Span>,
     ) {
@@ -100,7 +106,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         &self,
         cause: &ObligationCause<'tcx>,
         exp_found: &ty::error::ExpectedFound<Ty<'tcx>>,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
     ) {
         // Heavily inspired by `FnCtxt::suggest_compatible_variants`, with
         // some modifications due to that being in typeck and this being in infer.
@@ -177,7 +183,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         cause: &ObligationCause<'tcx>,
         exp_span: Span,
         exp_found: &ty::error::ExpectedFound<Ty<'tcx>>,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
     ) {
         debug!(
             "suggest_await_on_expect_found: exp_span={:?}, expected_ty={:?}, found_ty={:?}",
@@ -258,7 +264,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         &self,
         cause: &ObligationCause<'tcx>,
         exp_found: &ty::error::ExpectedFound<Ty<'tcx>>,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
     ) {
         debug!(
             "suggest_accessing_field_where_appropriate(cause={:?}, exp_found={:?})",
@@ -293,12 +299,103 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         }
     }
 
+    pub(super) fn suggest_turning_stmt_into_expr(
+        &self,
+        cause: &ObligationCause<'tcx>,
+        exp_found: &ty::error::ExpectedFound<Ty<'tcx>>,
+        diag: &mut Diag<'_>,
+    ) {
+        let ty::error::ExpectedFound { expected, found } = exp_found;
+        if !found.peel_refs().is_unit() {
+            return;
+        }
+
+        let ObligationCauseCode::BlockTailExpression(hir_id, MatchSource::Normal) = cause.code()
+        else {
+            return;
+        };
+
+        let node = self.tcx.hir_node(*hir_id);
+        let mut blocks = vec![];
+        if let hir::Node::Block(block) = node
+            && let Some(expr) = block.expr
+            && let hir::ExprKind::Path(QPath::Resolved(_, Path { res, .. })) = expr.kind
+            && let Res::Local(local) = res
+            && let Node::Local(Local { init: Some(init), .. }) = self.tcx.parent_hir_node(*local)
+        {
+            fn collect_blocks<'hir>(expr: &hir::Expr<'hir>, blocks: &mut Vec<&hir::Block<'hir>>) {
+                match expr.kind {
+                    // `blk1` and `blk2` must be have the same types, it will be reported before reaching here
+                    hir::ExprKind::If(_, blk1, Some(blk2)) => {
+                        collect_blocks(blk1, blocks);
+                        collect_blocks(blk2, blocks);
+                    }
+                    hir::ExprKind::Match(_, arms, _) => {
+                        // all arms must have same types
+                        for arm in arms.iter() {
+                            collect_blocks(arm.body, blocks);
+                        }
+                    }
+                    hir::ExprKind::Block(blk, _) => {
+                        blocks.push(blk);
+                    }
+                    _ => {}
+                }
+            }
+            collect_blocks(init, &mut blocks);
+        }
+
+        let expected_inner: Ty<'_> = expected.peel_refs();
+        for block in blocks.iter() {
+            self.consider_removing_semicolon(block, expected_inner, diag);
+        }
+    }
+
+    /// A common error is to add an extra semicolon:
+    ///
+    /// ```compile_fail,E0308
+    /// fn foo() -> usize {
+    ///     22;
+    /// }
+    /// ```
+    ///
+    /// This routine checks if the final statement in a block is an
+    /// expression with an explicit semicolon whose type is compatible
+    /// with `expected_ty`. If so, it suggests removing the semicolon.
+    pub fn consider_removing_semicolon(
+        &self,
+        blk: &'tcx hir::Block<'tcx>,
+        expected_ty: Ty<'tcx>,
+        diag: &mut Diag<'_>,
+    ) -> bool {
+        if let Some((span_semi, boxed)) = self.could_remove_semicolon(blk, expected_ty) {
+            if let StatementAsExpression::NeedsBoxing = boxed {
+                diag.span_suggestion_verbose(
+                    span_semi,
+                    "consider removing this semicolon and boxing the expression",
+                    "",
+                    Applicability::HasPlaceholders,
+                );
+            } else {
+                diag.span_suggestion_short(
+                    span_semi,
+                    "remove this semicolon to return this value",
+                    "",
+                    Applicability::MachineApplicable,
+                );
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn suggest_function_pointers(
         &self,
         cause: &ObligationCause<'tcx>,
         span: Span,
         exp_found: &ty::error::ExpectedFound<Ty<'tcx>>,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
     ) {
         debug!("suggest_function_pointers(cause={:?}, exp_found={:?})", cause, exp_found);
         let ty::error::ExpectedFound { expected, found } = exp_found;
@@ -467,62 +564,55 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         cause: &ObligationCause<'_>,
         span: Span,
     ) -> Option<TypeErrorAdditionalDiags> {
-        let hir = self.tcx.hir();
-        if let Some(body_id) = self.tcx.hir().maybe_body_owned_by(cause.body_id) {
-            let body = hir.body(body_id);
+        /// Find the if expression with given span
+        struct IfVisitor {
+            pub found_if: bool,
+            pub err_span: Span,
+        }
 
-            /// Find the if expression with given span
-            struct IfVisitor {
-                pub result: bool,
-                pub found_if: bool,
-                pub err_span: Span,
-            }
-
-            impl<'v> Visitor<'v> for IfVisitor {
-                fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) {
-                    if self.result {
-                        return;
+        impl<'v> Visitor<'v> for IfVisitor {
+            type Result = ControlFlow<()>;
+            fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) -> Self::Result {
+                match ex.kind {
+                    hir::ExprKind::If(cond, _, _) => {
+                        self.found_if = true;
+                        walk_expr(self, cond)?;
+                        self.found_if = false;
+                        ControlFlow::Continue(())
                     }
-                    match ex.kind {
-                        hir::ExprKind::If(cond, _, _) => {
-                            self.found_if = true;
-                            walk_expr(self, cond);
-                            self.found_if = false;
-                        }
-                        _ => walk_expr(self, ex),
-                    }
-                }
-
-                fn visit_stmt(&mut self, ex: &'v hir::Stmt<'v>) {
-                    if let hir::StmtKind::Local(hir::Local {
-                        span,
-                        pat: hir::Pat { .. },
-                        ty: None,
-                        init: Some(_),
-                        ..
-                    }) = &ex.kind
-                        && self.found_if
-                        && span.eq(&self.err_span)
-                    {
-                        self.result = true;
-                    }
-                    walk_stmt(self, ex);
-                }
-
-                fn visit_body(&mut self, body: &'v hir::Body<'v>) {
-                    hir::intravisit::walk_body(self, body);
+                    _ => walk_expr(self, ex),
                 }
             }
 
-            let mut visitor = IfVisitor { err_span: span, found_if: false, result: false };
-            visitor.visit_body(body);
-            if visitor.result {
-                return Some(TypeErrorAdditionalDiags::AddLetForLetChains {
-                    span: span.shrink_to_lo(),
-                });
+            fn visit_stmt(&mut self, ex: &'v hir::Stmt<'v>) -> Self::Result {
+                if let hir::StmtKind::Local(hir::Local {
+                    span,
+                    pat: hir::Pat { .. },
+                    ty: None,
+                    init: Some(_),
+                    ..
+                }) = &ex.kind
+                    && self.found_if
+                    && span.eq(&self.err_span)
+                {
+                    ControlFlow::Break(())
+                } else {
+                    walk_stmt(self, ex)
+                }
+            }
+
+            fn visit_body(&mut self, body: &'v hir::Body<'v>) -> Self::Result {
+                hir::intravisit::walk_body(self, body)
             }
         }
-        None
+
+        self.tcx.hir().maybe_body_owned_by(cause.body_id).and_then(|body_id| {
+            let body = self.tcx.hir().body(body_id);
+            IfVisitor { err_span: span, found_if: false }
+                .visit_body(body)
+                .is_break()
+                .then(|| TypeErrorAdditionalDiags::AddLetForLetChains { span: span.shrink_to_lo() })
+        })
     }
 
     /// For "one type is more general than the other" errors on closures, suggest changing the lifetime
@@ -532,7 +622,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         span: Span,
         hir: hir::Node<'_>,
         exp_found: &ty::error::ExpectedFound<ty::PolyTraitRef<'tcx>>,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
     ) {
         // 0. Extract fn_decl from hir
         let hir::Node::Expr(hir::Expr {
@@ -818,7 +908,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         &self,
         blk: &'tcx hir::Block<'tcx>,
         expected_ty: Ty<'tcx>,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
     ) -> bool {
         let diag = self.consider_returning_binding_diag(blk, expected_ty);
         match diag {

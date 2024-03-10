@@ -1,7 +1,7 @@
 use std::fmt::{self, Write};
 use std::num::NonZero;
 
-use rustc_errors::{DiagnosticBuilder, DiagnosticMessage, Level};
+use rustc_errors::{Diag, DiagMessage, Level};
 use rustc_span::{SpanData, Symbol, DUMMY_SP};
 use rustc_target::abi::{Align, Size};
 
@@ -95,12 +95,12 @@ impl fmt::Debug for TerminationInfo {
 }
 
 impl MachineStopType for TerminationInfo {
-    fn diagnostic_message(&self) -> DiagnosticMessage {
+    fn diagnostic_message(&self) -> DiagMessage {
         self.to_string().into()
     }
     fn add_args(
         self: Box<Self>,
-        _: &mut dyn FnMut(std::borrow::Cow<'static, str>, rustc_errors::DiagnosticArgValue),
+        _: &mut dyn FnMut(std::borrow::Cow<'static, str>, rustc_errors::DiagArgValue),
     ) {
     }
 }
@@ -116,6 +116,7 @@ pub enum NonHaltingDiagnostic {
     CreatedCallId(CallId),
     CreatedAlloc(AllocId, Size, Align, MemoryKind<MiriMemoryKind>),
     FreedAlloc(AllocId),
+    AccessedAlloc(AllocId, AccessKind),
     RejectedIsolatedOp(String),
     ProgressReport {
         block_count: u64, // how many basic blocks have been run so far
@@ -459,7 +460,7 @@ pub fn report_msg<'tcx>(
         DiagLevel::Warning => Level::Warning,
         DiagLevel::Note => Level::Note,
     };
-    let mut err = DiagnosticBuilder::<()>::new(sess.dcx(), level, title);
+    let mut err = Diag::<()>::new(sess.dcx(), level, title);
     err.span(span);
 
     // Show main message.
@@ -477,7 +478,6 @@ pub fn report_msg<'tcx>(
 
     // Show note and help messages.
     let mut extra_span = false;
-    let notes_len = notes.len();
     for (span_data, note) in notes {
         if let Some(span_data) = span_data {
             err.span_note(span_data.span(), note);
@@ -486,7 +486,6 @@ pub fn report_msg<'tcx>(
             err.note(note);
         }
     }
-    let helps_len = helps.len();
     for (span_data, help) in helps {
         if let Some(span_data) = span_data {
             err.span_help(span_data.span(), help);
@@ -495,12 +494,20 @@ pub fn report_msg<'tcx>(
             err.help(help);
         }
     }
-    if notes_len + helps_len > 0 {
-        // Add visual separator before backtrace.
-        err.note(if extra_span { "BACKTRACE (of the first span):" } else { "BACKTRACE:" });
-    }
 
     // Add backtrace
+    let mut backtrace_title = String::from("BACKTRACE");
+    if extra_span {
+        write!(backtrace_title, " (of the first span)").unwrap();
+    }
+    let thread_name =
+        machine.threads.get_thread_display_name(machine.threads.get_active_thread_id());
+    if thread_name != "main" {
+        // Only print thread name if it is not `main`.
+        write!(backtrace_title, " on thread `{thread_name}`").unwrap();
+    };
+    write!(backtrace_title, ":").unwrap();
+    err.note(backtrace_title);
     for (idx, frame_info) in stacktrace.iter().enumerate() {
         let is_local = machine.is_local(frame_info);
         // No span for non-local frames and the first frame (which is the error site).
@@ -532,6 +539,7 @@ impl<'mir, 'tcx> MiriMachine<'mir, 'tcx> {
             | PoppedPointerTag(..)
             | CreatedCallId(..)
             | CreatedAlloc(..)
+            | AccessedAlloc(..)
             | FreedAlloc(..)
             | ProgressReport { .. }
             | WeakMemoryOutdatedLoad => ("tracking was triggered".to_string(), DiagLevel::Note),
@@ -553,6 +561,8 @@ impl<'mir, 'tcx> MiriMachine<'mir, 'tcx> {
                     size = size.bytes(),
                     align = align.bytes(),
                 ),
+            AccessedAlloc(AllocId(id), access_kind) =>
+                format!("{access_kind} to allocation with id {id}"),
             FreedAlloc(AllocId(id)) => format!("freed allocation with id {id}"),
             RejectedIsolatedOp(ref op) =>
                 format!("{op} was made to return an error due to isolation"),

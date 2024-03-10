@@ -18,8 +18,7 @@ use crate::require_c_abi_if_c_variadic;
 use rustc_ast::TraitObjectSyntax;
 use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use rustc_errors::{
-    codes::*, struct_span_code_err, Applicability, DiagnosticBuilder, ErrorGuaranteed, FatalError,
-    MultiSpan,
+    codes::*, struct_span_code_err, Applicability, Diag, ErrorGuaranteed, FatalError, MultiSpan,
 };
 use rustc_hir as hir;
 use rustc_hir::def::{CtorOf, DefKind, Namespace, Res};
@@ -861,10 +860,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                              traits with associated type `{name}`, you could use the \
                              fully-qualified path",
                         ),
-                        traits
-                            .iter()
-                            .map(|trait_str| format!("<Example as {trait_str}>::{name}"))
-                            .collect::<Vec<_>>(),
+                        traits.iter().map(|trait_str| format!("<Example as {trait_str}>::{name}")),
                         Applicability::HasPlaceholders,
                     );
                 }
@@ -1616,10 +1612,11 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                         .any(|impl_def_id| {
                             let impl_header = tcx.impl_trait_header(impl_def_id);
                             impl_header.is_some_and(|header| {
-                                let header = header.instantiate(
+                                let trait_ref = header.trait_ref.instantiate(
                                     tcx,
                                     infcx.fresh_args_for_item(DUMMY_SP, impl_def_id),
                                 );
+
                                 let value = tcx.fold_regions(qself_ty, |_, _| tcx.lifetimes.re_erased);
                                 // FIXME: Don't bother dealing with non-lifetime binders here...
                                 if value.has_escaping_bound_vars() {
@@ -1628,7 +1625,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                                 infcx
                                     .can_eq(
                                         ty::ParamEnv::empty(),
-                                        header.trait_ref.self_ty(),
+                                        trait_ref.self_ty(),
                                         value,
                                     ) && header.polarity != ty::ImplPolarity::Negative
                             })
@@ -1681,9 +1678,9 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     .filter(|header| {
                         // Consider only accessible traits
                         tcx.visibility(trait_def_id).is_accessible_from(self.item_def_id(), tcx)
-                            && header.skip_binder().polarity != ty::ImplPolarity::Negative
+                            && header.polarity != ty::ImplPolarity::Negative
                     })
-                    .map(|header| header.instantiate_identity().trait_ref.self_ty())
+                    .map(|header| header.trait_ref.instantiate_identity().self_ty())
                     // We don't care about blanket impls.
                     .filter(|self_ty| !self_ty.has_non_region_param())
                     .map(|self_ty| tcx.erase_regions(self_ty).to_string())
@@ -1723,7 +1720,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
     pub fn prohibit_generics<'a>(
         &self,
         segments: impl Iterator<Item = &'a hir::PathSegment<'a>> + Clone,
-        extend: impl Fn(&mut DiagnosticBuilder<'_>),
+        extend: impl Fn(&mut Diag<'_>),
     ) -> bool {
         let args = segments.clone().flat_map(|segment| segment.args().args);
 
@@ -2739,7 +2736,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         &self,
         constrained_regions: FxHashSet<ty::BoundRegionKind>,
         referenced_regions: FxHashSet<ty::BoundRegionKind>,
-        generate_err: impl Fn(&str) -> DiagnosticBuilder<'tcx>,
+        generate_err: impl Fn(&str) -> Diag<'tcx>,
     ) {
         for br in referenced_regions.difference(&constrained_regions) {
             let br_name = match *br {

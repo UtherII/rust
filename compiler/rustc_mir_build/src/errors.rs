@@ -1,8 +1,8 @@
 use crate::fluent_generated as fluent;
-use rustc_errors::DiagnosticArgValue;
+use rustc_errors::DiagArgValue;
 use rustc_errors::{
-    codes::*, AddToDiagnostic, Applicability, DiagCtxt, DiagnosticBuilder, EmissionGuarantee,
-    IntoDiagnostic, Level, MultiSpan, SubdiagnosticMessageOp,
+    codes::*, AddToDiagnostic, Applicability, Diag, DiagCtxt, EmissionGuarantee, IntoDiagnostic,
+    Level, MultiSpan, SubdiagMessageOp,
 };
 use rustc_macros::{Diagnostic, LintDiagnostic, Subdiagnostic};
 use rustc_middle::ty::{self, Ty};
@@ -127,11 +127,11 @@ pub struct UnsafeOpInUnsafeFnCallToFunctionWithRequiresUnsafe {
     #[label]
     pub span: Span,
     pub function: String,
-    pub missing_target_features: DiagnosticArgValue,
+    pub missing_target_features: DiagArgValue,
     pub missing_target_features_count: usize,
     #[note]
     pub note: Option<()>,
-    pub build_target_features: DiagnosticArgValue,
+    pub build_target_features: DiagArgValue,
     pub build_target_features_count: usize,
     #[subdiagnostic]
     pub unsafe_not_inherited_note: Option<UnsafeNotInheritedLintNote>,
@@ -379,11 +379,11 @@ pub struct CallToFunctionWithRequiresUnsafe {
     #[label]
     pub span: Span,
     pub function: String,
-    pub missing_target_features: DiagnosticArgValue,
+    pub missing_target_features: DiagArgValue,
     pub missing_target_features_count: usize,
     #[note]
     pub note: Option<()>,
-    pub build_target_features: DiagnosticArgValue,
+    pub build_target_features: DiagArgValue,
     pub build_target_features_count: usize,
     #[subdiagnostic]
     pub unsafe_not_inherited_note: Option<UnsafeNotInheritedNote>,
@@ -397,11 +397,11 @@ pub struct CallToFunctionWithRequiresUnsafeUnsafeOpInUnsafeFnAllowed {
     #[label]
     pub span: Span,
     pub function: String,
-    pub missing_target_features: DiagnosticArgValue,
+    pub missing_target_features: DiagArgValue,
     pub missing_target_features_count: usize,
     #[note]
     pub note: Option<()>,
-    pub build_target_features: DiagnosticArgValue,
+    pub build_target_features: DiagArgValue,
     pub build_target_features_count: usize,
     #[subdiagnostic]
     pub unsafe_not_inherited_note: Option<UnsafeNotInheritedNote>,
@@ -420,9 +420,9 @@ pub struct UnsafeNotInheritedLintNote {
 }
 
 impl AddToDiagnostic for UnsafeNotInheritedLintNote {
-    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagnosticMessageOp<G>>(
+    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
         self,
-        diag: &mut DiagnosticBuilder<'_, G>,
+        diag: &mut Diag<'_, G>,
         _f: F,
     ) {
         diag.span_note(self.signature_span, fluent::mir_build_unsafe_fn_safe_body);
@@ -461,13 +461,12 @@ pub(crate) struct NonExhaustivePatternsTypeNotEmpty<'p, 'tcx, 'm> {
     pub ty: Ty<'tcx>,
 }
 
-impl<'a> IntoDiagnostic<'a> for NonExhaustivePatternsTypeNotEmpty<'_, '_, '_> {
-    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> DiagnosticBuilder<'_> {
-        let mut diag = DiagnosticBuilder::new(
-            dcx,
-            level,
-            fluent::mir_build_non_exhaustive_patterns_type_not_empty,
-        );
+impl<'a, G: EmissionGuarantee> IntoDiagnostic<'a, G>
+    for NonExhaustivePatternsTypeNotEmpty<'_, '_, '_>
+{
+    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> Diag<'_, G> {
+        let mut diag =
+            Diag::new(dcx, level, fluent::mir_build_non_exhaustive_patterns_type_not_empty);
         diag.span(self.span);
         diag.code(E0004);
         let peeled_ty = self.ty.peel_refs();
@@ -766,6 +765,14 @@ pub struct TypeNotStructural<'tcx> {
 }
 
 #[derive(Diagnostic)]
+#[diag(mir_build_non_partial_eq_match)]
+pub struct TypeNotPartialEq<'tcx> {
+    #[primary_span]
+    pub span: Span,
+    pub non_peq_ty: Ty<'tcx>,
+}
+
+#[derive(Diagnostic)]
 #[diag(mir_build_invalid_pattern)]
 pub struct InvalidPattern<'tcx> {
     #[primary_span]
@@ -820,12 +827,6 @@ pub struct NontrivialStructuralMatch<'tcx> {
     pub non_sm_ty: Ty<'tcx>,
 }
 
-#[derive(LintDiagnostic)]
-#[diag(mir_build_non_partial_eq_match)]
-pub struct NonPartialEqMatch<'tcx> {
-    pub non_peq_ty: Ty<'tcx>,
-}
-
 #[derive(Diagnostic)]
 #[diag(mir_build_pattern_not_covered, code = E0005)]
 pub(crate) struct PatternNotCovered<'s, 'tcx> {
@@ -867,9 +868,9 @@ pub struct Variant {
 }
 
 impl<'tcx> AddToDiagnostic for AdtDefinedHere<'tcx> {
-    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagnosticMessageOp<G>>(
+    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
         self,
-        diag: &mut DiagnosticBuilder<'_, G>,
+        diag: &mut Diag<'_, G>,
         _f: F,
     ) {
         diag.arg("ty", self.ty);

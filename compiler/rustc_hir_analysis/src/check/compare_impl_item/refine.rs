@@ -12,7 +12,6 @@ use rustc_trait_selection::regions::InferCtxtRegionExt;
 use rustc_trait_selection::traits::{
     elaborate, normalize_param_env_or_error, outlives_bounds::InferCtxtExt, ObligationCtxt,
 };
-use std::ops::ControlFlow;
 
 /// Check that an implementation does not refine an RPITIT from a trait method signature.
 pub(super) fn check_refining_return_position_impl_trait_in_trait<'tcx>(
@@ -136,11 +135,15 @@ pub(super) fn check_refining_return_position_impl_trait_in_trait<'tcx>(
     // 1. Project the RPITIT projections from the trait to the opaques on the impl,
     //    which means that they don't need to be mapped manually.
     //
-    // 2. Project any other projections that show up in the bound. That makes sure that
-    //    we don't consider `tests/ui/async-await/in-trait/async-associated-types.rs`
-    //    to be refining.
-    let (trait_bounds, impl_bounds) =
-        ocx.normalize(&ObligationCause::dummy(), param_env, (trait_bounds, impl_bounds));
+    // 2. Deeply normalize any other projections that show up in the bound. That makes sure
+    //    that we don't consider `tests/ui/async-await/in-trait/async-associated-types.rs`
+    //    or `tests/ui/impl-trait/in-trait/refine-normalize.rs` to be refining.
+    let Ok((trait_bounds, impl_bounds)) =
+        ocx.deeply_normalize(&ObligationCause::dummy(), param_env, (trait_bounds, impl_bounds))
+    else {
+        tcx.dcx().delayed_bug("encountered errors when checking RPITIT refinement (selection)");
+        return;
+    };
 
     // Since we've normalized things, we need to resolve regions, since we'll
     // possibly have introduced region vars during projection. We don't expect
@@ -154,10 +157,8 @@ pub(super) fn check_refining_return_position_impl_trait_in_trait<'tcx>(
         trait_m_sig.inputs_and_output,
     ));
     if !ocx.select_all_or_error().is_empty() {
-        // This code path is not reached in any tests, but may be reachable. If
-        // this is triggered, it should be converted to `delayed_bug` and the
-        // triggering case turned into a test.
-        tcx.dcx().bug("encountered errors when checking RPITIT refinement (selection)");
+        tcx.dcx().delayed_bug("encountered errors when checking RPITIT refinement (selection)");
+        return;
     }
     let outlives_env = OutlivesEnvironment::with_bounds(
         param_env,
@@ -165,10 +166,8 @@ pub(super) fn check_refining_return_position_impl_trait_in_trait<'tcx>(
     );
     let errors = infcx.resolve_regions(&outlives_env);
     if !errors.is_empty() {
-        // This code path is not reached in any tests, but may be reachable. If
-        // this is triggered, it should be converted to `delayed_bug` and the
-        // triggering case turned into a test.
-        tcx.dcx().bug("encountered errors when checking RPITIT refinement (regions)");
+        tcx.dcx().delayed_bug("encountered errors when checking RPITIT refinement (regions)");
+        return;
     }
     // Resolve any lifetime variables that may have been introduced during normalization.
     let Ok((trait_bounds, impl_bounds)) = infcx.fully_resolve((trait_bounds, impl_bounds)) else {
@@ -211,9 +210,7 @@ struct ImplTraitInTraitCollector<'tcx> {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ImplTraitInTraitCollector<'tcx> {
-    type BreakTy = !;
-
-    fn visit_ty(&mut self, ty: Ty<'tcx>) -> std::ops::ControlFlow<Self::BreakTy> {
+    fn visit_ty(&mut self, ty: Ty<'tcx>) {
         if let ty::Alias(ty::Projection, proj) = *ty.kind()
             && self.tcx.is_impl_trait_in_trait(proj.def_id)
         {
@@ -223,12 +220,11 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ImplTraitInTraitCollector<'tcx> {
                     .explicit_item_bounds(proj.def_id)
                     .iter_instantiated_copied(self.tcx, proj.args)
                 {
-                    pred.visit_with(self)?;
+                    pred.visit_with(self);
                 }
             }
-            ControlFlow::Continue(())
         } else {
-            ty.super_visit_with(self)
+            ty.super_visit_with(self);
         }
     }
 }

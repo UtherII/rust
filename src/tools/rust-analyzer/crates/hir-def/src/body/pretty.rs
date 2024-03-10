@@ -6,8 +6,8 @@ use itertools::Itertools;
 
 use crate::{
     hir::{
-        Array, BindingAnnotation, CaptureBy, ClosureKind, Literal, LiteralOrConst,
-        Movability, Statement,
+        Array, BindingAnnotation, CaptureBy, ClosureKind, Literal, LiteralOrConst, Movability,
+        Statement,
     },
     pretty::{print_generic_args, print_path, print_type_ref},
     type_ref::TypeRef,
@@ -635,7 +635,7 @@ impl Printer<'_> {
     fn print_literal_or_const(&mut self, literal_or_const: &LiteralOrConst) {
         match literal_or_const {
             LiteralOrConst::Literal(l) => self.print_literal(l),
-            LiteralOrConst::Const(c) => self.print_path(c),
+            LiteralOrConst::Const(c) => self.print_pat(*c),
         }
     }
 

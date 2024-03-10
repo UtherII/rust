@@ -12,12 +12,12 @@ use crate::MemFlags;
 use rustc_ast as ast;
 use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 use rustc_hir::lang_items::LangItem;
-use rustc_middle::mir::{self, AssertKind, SwitchTargets, UnwindTerminateReason};
+use rustc_middle::mir::{self, AssertKind, BasicBlock, SwitchTargets, UnwindTerminateReason};
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutOf, ValidityRequirement};
 use rustc_middle::ty::print::{with_no_trimmed_paths, with_no_visible_paths};
 use rustc_middle::ty::{self, Instance, Ty};
 use rustc_session::config::OptLevel;
-use rustc_span::{source_map::Spanned, sym, Span, Symbol};
+use rustc_span::{source_map::Spanned, sym, Span};
 use rustc_target::abi::call::{ArgAbi, FnAbi, PassMode, Reg};
 use rustc_target::abi::{self, HasDataLayout, WrappingRange};
 use rustc_target::spec::abi::Abi;
@@ -264,7 +264,8 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
             mir::UnwindAction::Unreachable => None,
         };
 
-        if let Some(cleanup) = unwind_target {
+        if operands.iter().any(|x| matches!(x, InlineAsmOperandRef::Label { .. })) {
+            assert!(unwind_target.is_none());
             let ret_llbb = if let Some(target) = destination {
                 fx.llbb(target)
             } else {
@@ -277,11 +278,29 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
                 options,
                 line_spans,
                 instance,
-                Some((ret_llbb, cleanup, self.funclet(fx))),
+                Some(ret_llbb),
+                None,
+            );
+            MergingSucc::False
+        } else if let Some(cleanup) = unwind_target {
+            let ret_llbb = if let Some(target) = destination {
+                fx.llbb(target)
+            } else {
+                fx.unreachable_block()
+            };
+
+            bx.codegen_inline_asm(
+                template,
+                operands,
+                options,
+                line_spans,
+                instance,
+                Some(ret_llbb),
+                Some((cleanup, self.funclet(fx))),
             );
             MergingSucc::False
         } else {
-            bx.codegen_inline_asm(template, operands, options, line_spans, instance, None);
+            bx.codegen_inline_asm(template, operands, options, line_spans, instance, None, None);
 
             if let Some(target) = destination {
                 self.funclet_br(fx, bx, target, mergeable_succ)
@@ -319,7 +338,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         targets: &SwitchTargets,
     ) {
         let discr = self.codegen_operand(bx, discr);
+        let discr_value = discr.immediate();
         let switch_ty = discr.layout.ty;
+        // If our discriminant is a constant we can branch directly
+        if let Some(const_discr) = bx.const_to_opt_u128(discr_value, false) {
+            let target = targets.target_for_value(const_discr);
+            bx.br(helper.llbb_with_cleanup(self, target));
+            return;
+        };
+
         let mut target_iter = targets.iter();
         if target_iter.len() == 1 {
             // If there are two targets (one conditional, one fallback), emit `br` instead of
@@ -330,14 +357,14 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             if switch_ty == bx.tcx().types.bool {
                 // Don't generate trivial icmps when switching on bool.
                 match test_value {
-                    0 => bx.cond_br(discr.immediate(), llfalse, lltrue),
-                    1 => bx.cond_br(discr.immediate(), lltrue, llfalse),
+                    0 => bx.cond_br(discr_value, llfalse, lltrue),
+                    1 => bx.cond_br(discr_value, lltrue, llfalse),
                     _ => bug!(),
                 }
             } else {
                 let switch_llty = bx.immediate_backend_type(bx.layout_of(switch_ty));
                 let llval = bx.const_uint_big(switch_llty, test_value);
-                let cmp = bx.icmp(IntPredicate::IntEQ, discr.immediate(), llval);
+                let cmp = bx.icmp(IntPredicate::IntEQ, discr_value, llval);
                 bx.cond_br(cmp, lltrue, llfalse);
             }
         } else if self.cx.sess().opts.optimize == OptLevel::No
@@ -362,11 +389,11 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             let ll2 = helper.llbb_with_cleanup(self, target2);
             let switch_llty = bx.immediate_backend_type(bx.layout_of(switch_ty));
             let llval = bx.const_uint_big(switch_llty, test_value1);
-            let cmp = bx.icmp(IntPredicate::IntEQ, discr.immediate(), llval);
+            let cmp = bx.icmp(IntPredicate::IntEQ, discr_value, llval);
             bx.cond_br(cmp, ll1, ll2);
         } else {
             bx.switch(
-                discr.immediate(),
+                discr_value,
                 helper.llbb_with_cleanup(self, targets.otherwise()),
                 target_iter.map(|(value, target)| (value, helper.llbb_with_cleanup(self, target))),
             );
@@ -672,7 +699,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         &mut self,
         helper: &TerminatorCodegenHelper<'tcx>,
         bx: &mut Bx,
-        intrinsic: Option<Symbol>,
+        intrinsic: Option<ty::IntrinsicDef>,
         instance: Option<Instance<'tcx>>,
         source_info: mir::SourceInfo,
         target: Option<mir::BasicBlock>,
@@ -682,7 +709,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         // Emit a panic or a no-op for `assert_*` intrinsics.
         // These are intrinsics that compile to panics so that we can get a message
         // which mentions the offending type, even from a const context.
-        let panic_intrinsic = intrinsic.and_then(|s| ValidityRequirement::from_intrinsic(s));
+        let panic_intrinsic = intrinsic.and_then(|i| ValidityRequirement::from_intrinsic(i.name));
         if let Some(requirement) = panic_intrinsic {
             let ty = instance.unwrap().args.type_at(0);
 
@@ -818,14 +845,20 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         // The arguments we'll be passing. Plus one to account for outptr, if used.
         let arg_count = fn_abi.args.len() + fn_abi.ret.is_indirect() as usize;
 
-        if intrinsic == Some(sym::caller_location) {
+        if matches!(intrinsic, Some(ty::IntrinsicDef { name: sym::caller_location, .. })) {
             return if let Some(target) = target {
                 let location =
                     self.get_caller_location(bx, mir::SourceInfo { span: fn_span, ..source_info });
 
                 let mut llargs = Vec::with_capacity(arg_count);
-                let ret_dest =
-                    self.make_return_dest(bx, destination, &fn_abi.ret, &mut llargs, true, true);
+                let ret_dest = self.make_return_dest(
+                    bx,
+                    destination,
+                    &fn_abi.ret,
+                    &mut llargs,
+                    intrinsic,
+                    Some(target),
+                );
                 assert_eq!(llargs, []);
                 if let ReturnDest::IndirectOperand(tmp, _) = ret_dest {
                     location.val.store(bx, tmp);
@@ -838,7 +871,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         }
 
         let instance = match intrinsic {
-            None | Some(sym::drop_in_place) => instance,
+            None => instance,
             Some(intrinsic) => {
                 let mut llargs = Vec::with_capacity(1);
                 let ret_dest = self.make_return_dest(
@@ -846,8 +879,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     destination,
                     &fn_abi.ret,
                     &mut llargs,
-                    true,
-                    target.is_some(),
+                    Some(intrinsic),
+                    target,
                 );
                 let dest = match ret_dest {
                     _ if fn_abi.ret.is_indirect() => llargs[0],
@@ -864,9 +897,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     .map(|(i, arg)| {
                         // The indices passed to simd_shuffle in the
                         // third argument must be constant. This is
-                        // checked by const-qualification, which also
-                        // promotes any complex rvalues to constants.
-                        if i == 2 && intrinsic == sym::simd_shuffle {
+                        // checked by the type-checker.
+                        if i == 2 && intrinsic.name == sym::simd_shuffle {
                             if let mir::Operand::Constant(constant) = &arg.node {
                                 let (llval, ty) = self.simd_shuffle_indices(bx, constant);
                                 return OperandRef {
@@ -896,14 +928,33 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                             MergingSucc::False
                         };
                     }
-                    Err(instance) => Some(instance),
+                    Err(instance) => {
+                        if intrinsic.must_be_overridden {
+                            span_bug!(
+                                span,
+                                "intrinsic {} must be overridden by codegen backend, but isn't",
+                                intrinsic.name,
+                            );
+                        }
+                        Some(instance)
+                    }
                 }
             }
         };
 
         let mut llargs = Vec::with_capacity(arg_count);
         let destination = target.as_ref().map(|&target| {
-            (self.make_return_dest(bx, destination, &fn_abi.ret, &mut llargs, false, true), target)
+            (
+                self.make_return_dest(
+                    bx,
+                    destination,
+                    &fn_abi.ret,
+                    &mut llargs,
+                    None,
+                    Some(target),
+                ),
+                target,
+            )
         });
 
         // Split the rust-call tupled arguments off.
@@ -1068,7 +1119,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         operands: &[mir::InlineAsmOperand<'tcx>],
         options: ast::InlineAsmOptions,
         line_spans: &[Span],
-        destination: Option<mir::BasicBlock>,
+        targets: &[mir::BasicBlock],
         unwind: mir::UnwindAction,
         instance: Instance<'_>,
         mergeable_succ: bool,
@@ -1120,6 +1171,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 mir::InlineAsmOperand::SymStatic { def_id } => {
                     InlineAsmOperandRef::SymStatic { def_id }
                 }
+                mir::InlineAsmOperand::Label { target_index } => {
+                    InlineAsmOperandRef::Label { label: self.llbb(targets[target_index]) }
+                }
             })
             .collect();
 
@@ -1130,7 +1184,11 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             &operands,
             options,
             line_spans,
-            destination,
+            if options.contains(InlineAsmOptions::NORETURN) {
+                None
+            } else {
+                targets.get(0).copied()
+            },
             unwind,
             instance,
             mergeable_succ,
@@ -1286,7 +1344,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 ref operands,
                 options,
                 line_spans,
-                destination,
+                ref targets,
                 unwind,
             } => self.codegen_asm_terminator(
                 helper,
@@ -1296,7 +1354,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 operands,
                 options,
                 line_spans,
-                destination,
+                targets,
                 unwind,
                 self.instance,
                 mergeable_succ(),
@@ -1636,10 +1694,10 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         dest: mir::Place<'tcx>,
         fn_ret: &ArgAbi<'tcx, Ty<'tcx>>,
         llargs: &mut Vec<Bx::Value>,
-        is_intrinsic: bool,
-        has_target: bool,
+        intrinsic: Option<ty::IntrinsicDef>,
+        target: Option<BasicBlock>,
     ) -> ReturnDest<'tcx, Bx::Value> {
-        if !has_target {
+        if target.is_none() {
             return ReturnDest::Nothing;
         }
         // If the return is ignored, we can just return a do-nothing `ReturnDest`.
@@ -1660,7 +1718,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         tmp.storage_live(bx);
                         llargs.push(tmp.llval);
                         ReturnDest::IndirectOperand(tmp, index)
-                    } else if is_intrinsic {
+                    } else if intrinsic.is_some() {
                         // Currently, intrinsics always need a location to store
                         // the result, so we create a temporary `alloca` for the
                         // result.

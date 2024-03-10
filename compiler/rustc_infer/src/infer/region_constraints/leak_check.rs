@@ -1,9 +1,7 @@
 use super::*;
-use crate::infer::CombinedSnapshot;
-use rustc_data_structures::{
-    fx::FxIndexMap,
-    graph::{scc::Sccs, vec_graph::VecGraph},
-};
+use crate::infer::snapshot::CombinedSnapshot;
+use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::graph::{scc::Sccs, vec_graph::VecGraph};
 use rustc_index::Idx;
 use rustc_middle::ty::error::TypeError;
 use rustc_middle::ty::relate::RelateResult;
@@ -90,11 +88,11 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
     }
 }
 
-struct LeakCheck<'me, 'tcx> {
+struct LeakCheck<'a, 'b, 'tcx> {
     tcx: TyCtxt<'tcx>,
     outer_universe: ty::UniverseIndex,
-    mini_graph: &'me MiniGraph<'tcx>,
-    rcc: &'me RegionConstraintCollector<'me, 'tcx>,
+    mini_graph: &'a MiniGraph<'tcx>,
+    rcc: &'a mut RegionConstraintCollector<'b, 'tcx>,
 
     // Initially, for each SCC S, stores a placeholder `P` such that `S = P`
     // must hold.
@@ -117,13 +115,13 @@ struct LeakCheck<'me, 'tcx> {
     scc_universes: IndexVec<LeakCheckScc, SccUniverse<'tcx>>,
 }
 
-impl<'me, 'tcx> LeakCheck<'me, 'tcx> {
+impl<'a, 'b, 'tcx> LeakCheck<'a, 'b, 'tcx> {
     fn new(
         tcx: TyCtxt<'tcx>,
         outer_universe: ty::UniverseIndex,
         max_universe: ty::UniverseIndex,
-        mini_graph: &'me MiniGraph<'tcx>,
-        rcc: &'me RegionConstraintCollector<'me, 'tcx>,
+        mini_graph: &'a MiniGraph<'tcx>,
+        rcc: &'a mut RegionConstraintCollector<'b, 'tcx>,
     ) -> Self {
         let dummy_scc_universe = SccUniverse { universe: max_universe, region: None };
         Self {

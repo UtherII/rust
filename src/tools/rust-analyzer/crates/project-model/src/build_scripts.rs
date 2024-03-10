@@ -71,8 +71,7 @@ impl WorkspaceBuildScripts {
                 cmd
             }
             _ => {
-                let mut cmd = Command::new(Tool::Cargo.path());
-                Sysroot::set_rustup_toolchain_env(&mut cmd, sysroot);
+                let mut cmd = Sysroot::tool(sysroot, Tool::Cargo);
 
                 cmd.args(["check", "--quiet", "--workspace", "--message-format=json"]);
                 cmd.args(&config.extra_args);
@@ -138,7 +137,7 @@ impl WorkspaceBuildScripts {
         toolchain: &Option<Version>,
         sysroot: Option<&Sysroot>,
     ) -> io::Result<WorkspaceBuildScripts> {
-        const RUST_1_62: Version = Version::new(1, 62, 0);
+        const RUST_1_75: Version = Version::new(1, 75, 0);
 
         let current_dir = match &config.invocation_location {
             InvocationLocation::Root(root) if config.run_build_script_command.is_some() => {
@@ -162,7 +161,7 @@ impl WorkspaceBuildScripts {
             progress,
         ) {
             Ok(WorkspaceBuildScripts { error: Some(error), .. })
-                if toolchain.as_ref().map_or(false, |it| *it >= RUST_1_62) =>
+                if toolchain.as_ref().map_or(false, |it| *it >= RUST_1_75) =>
             {
                 // building build scripts failed, attempt to build with --keep-going so
                 // that we potentially get more build data
@@ -172,7 +171,8 @@ impl WorkspaceBuildScripts {
                     &workspace.workspace_root().to_path_buf(),
                     sysroot,
                 )?;
-                cmd.args(["-Z", "unstable-options", "--keep-going"]).env("RUSTC_BOOTSTRAP", "1");
+
+                cmd.args(["--keep-going"]);
                 let mut res = Self::run_per_ws(cmd, workspace, current_dir, progress)?;
                 res.error = Some(error);
                 Ok(res)
@@ -429,8 +429,7 @@ impl WorkspaceBuildScripts {
         }
         let res = (|| {
             let target_libdir = (|| {
-                let mut cargo_config = Command::new(Tool::Cargo.path());
-                Sysroot::set_rustup_toolchain_env(&mut cargo_config, sysroot);
+                let mut cargo_config = Sysroot::tool(sysroot, Tool::Cargo);
                 cargo_config.envs(extra_env);
                 cargo_config
                     .current_dir(current_dir)
@@ -439,8 +438,7 @@ impl WorkspaceBuildScripts {
                 if let Ok(it) = utf8_stdout(cargo_config) {
                     return Ok(it);
                 }
-                let mut cmd = Command::new(Tool::Rustc.path());
-                Sysroot::set_rustup_toolchain_env(&mut cmd, sysroot);
+                let mut cmd = Sysroot::tool(sysroot, Tool::Rustc);
                 cmd.envs(extra_env);
                 cmd.args(["--print", "target-libdir"]);
                 utf8_stdout(cmd)

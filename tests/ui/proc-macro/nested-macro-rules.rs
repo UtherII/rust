@@ -5,6 +5,8 @@
 //@ edition:2018
 
 #![no_std] // Don't load unnecessary hygiene information from std
+#![warn(non_local_definitions)]
+
 extern crate std;
 
 extern crate nested_macro_rules;
@@ -19,5 +21,6 @@ fn main() {
     nested_macro_rules::inner_macro!(print_bang, print_attr);
 
     nested_macro_rules::outer_macro!(SecondStruct, SecondAttrStruct);
+    //~^ WARN non-local `macro_rules!` definition
     inner_macro!(print_bang, print_attr);
 }

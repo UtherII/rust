@@ -1,6 +1,6 @@
 //! This module generates a polymorphic MIR from a hir body
 
-use std::{fmt::Write, mem};
+use std::{fmt::Write, iter, mem};
 
 use base_db::{salsa::Cycle, FileId};
 use chalk_ir::{BoundVar, ConstData, DebruijnIndex, TyKind};
@@ -14,26 +14,36 @@ use hir_def::{
     lang_item::{LangItem, LangItemTarget},
     path::Path,
     resolver::{resolver_for_expr, HasResolver, ResolveValueResult, ValueNs},
-    AdtId, EnumVariantId, GeneralConstId, HasModule, ItemContainerId, LocalFieldId,
+    AdtId, DefWithBodyId, EnumVariantId, GeneralConstId, HasModule, ItemContainerId, LocalFieldId,
     Lookup, TraitId, TupleId, TypeOrConstParamId,
 };
 use hir_expand::name::Name;
+use la_arena::ArenaMap;
+use rustc_hash::FxHashMap;
 use syntax::TextRange;
 use triomphe::Arc;
 
 use crate::{
     consteval::ConstEvalError,
-    db::InternedClosure,
+    db::{HirDatabase, InternedClosure},
+    display::HirDisplay,
     infer::{CaptureKind, CapturedItem, TypeMismatch},
     inhabitedness::is_ty_uninhabited_from,
     layout::LayoutError,
+    mapping::ToChalk,
+    mir::{
+        intern_const_scalar, return_slot, AggregateKind, Arena, BasicBlock, BasicBlockId, BinOp,
+        BorrowKind, CastKind, ClosureId, ConstScalar, Either, Expr, FieldId, Idx, InferenceResult,
+        Interner, Local, LocalId, MemoryMap, MirBody, MirSpan, Mutability, Operand, Place,
+        PlaceElem, PointerCast, ProjectionElem, ProjectionStore, RawIdx, Rvalue, Statement,
+        StatementKind, Substitution, SwitchTargets, Terminator, TerminatorKind, TupleFieldId, Ty,
+        UnOp, VariantId,
+    },
     static_lifetime,
     traits::FnTrait,
     utils::{generics, ClosureSubst},
     Adjust, Adjustment, AutoBorrow, CallableDefId, TyBuilder, TyExt,
 };
-
-use super::*;
 
 mod as_place;
 mod pattern_matching;
@@ -1354,10 +1364,16 @@ impl<'ctx> MirLowerCtx<'ctx> {
         match loc {
             LiteralOrConst::Literal(l) => self.lower_literal_to_operand(ty, l),
             LiteralOrConst::Const(c) => {
-                let unresolved_name = || MirLowerError::unresolved_path(self.db, c);
+                let c = match &self.body.pats[*c] {
+                    Pat::Path(p) => p,
+                    _ => not_supported!(
+                        "only `char` and numeric types are allowed in range patterns"
+                    ),
+                };
+                let unresolved_name = || MirLowerError::unresolved_path(self.db, c.as_ref());
                 let resolver = self.owner.resolver(self.db.upcast());
                 let pr = resolver
-                    .resolve_path_in_value_ns(self.db.upcast(), c)
+                    .resolve_path_in_value_ns(self.db.upcast(), c.as_ref())
                     .ok_or_else(unresolved_name)?;
                 match pr {
                     ResolveValueResult::ValueNs(v, _) => {

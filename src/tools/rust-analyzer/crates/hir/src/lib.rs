@@ -68,7 +68,7 @@ use hir_ty::{
     known_const_to_ast,
     layout::{Layout as TyLayout, RustcEnumVariantIdx, RustcFieldIdx, TagEncoding},
     method_resolution::{self, TyFingerprint},
-    mir::interpret_mir,
+    mir::{interpret_mir, MutBorrowKind},
     primitive::UintTy,
     traits::FnTrait,
     AliasTy, CallableDefId, CallableSig, Canonical, CanonicalVarKinds, Cast, ClosureId, GenericArg,
@@ -93,7 +93,8 @@ pub use crate::{
     diagnostics::*,
     has_source::HasSource,
     semantics::{
-        DescendPreference, PathResolution, Semantics, SemanticsScope, TypeInfo, VisibleTraits,
+        DescendPreference, PathResolution, Semantics, SemanticsImpl, SemanticsScope, TypeInfo,
+        VisibleTraits,
     },
 };
 
@@ -125,7 +126,7 @@ pub use {
     },
     hir_expand::{
         attrs::{Attr, AttrId},
-        change::Change,
+        change::ChangeWithProcMacros,
         hygiene::{marks_rev, SyntaxContextExt},
         name::{known, Name},
         proc_macro::ProcMacros,
@@ -364,7 +365,7 @@ impl ModuleDef {
         Some(name)
     }
 
-    pub fn diagnostics(self, db: &dyn HirDatabase) -> Vec<AnyDiagnostic> {
+    pub fn diagnostics(self, db: &dyn HirDatabase, style_lints: bool) -> Vec<AnyDiagnostic> {
         let id = match self {
             ModuleDef::Adt(it) => match it {
                 Adt::Struct(it) => it.id.into(),
@@ -386,7 +387,7 @@ impl ModuleDef {
 
         match self.as_def_with_body() {
             Some(def) => {
-                def.diagnostics(db, &mut acc);
+                def.diagnostics(db, &mut acc, style_lints);
             }
             None => {
                 for diag in hir_ty::diagnostics::incorrect_case(db, id) {
@@ -540,7 +541,12 @@ impl Module {
     }
 
     /// Fills `acc` with the module's diagnostics.
-    pub fn diagnostics(self, db: &dyn HirDatabase, acc: &mut Vec<AnyDiagnostic>) {
+    pub fn diagnostics(
+        self,
+        db: &dyn HirDatabase,
+        acc: &mut Vec<AnyDiagnostic>,
+        style_lints: bool,
+    ) {
         let name = self.name(db);
         let _p = tracing::span!(tracing::Level::INFO, "Module::diagnostics", ?name);
         let def_map = self.id.def_map(db.upcast());
@@ -557,9 +563,9 @@ impl Module {
                 ModuleDef::Module(m) => {
                     // Only add diagnostics from inline modules
                     if def_map[m.id.local_id].origin.is_inline() {
-                        m.diagnostics(db, acc)
+                        m.diagnostics(db, acc, style_lints)
                     }
-                    acc.extend(def.diagnostics(db))
+                    acc.extend(def.diagnostics(db, style_lints))
                 }
                 ModuleDef::Trait(t) => {
                     for diag in db.trait_data_with_diagnostics(t.id).1.iter() {
@@ -567,10 +573,10 @@ impl Module {
                     }
 
                     for item in t.items(db) {
-                        item.diagnostics(db, acc);
+                        item.diagnostics(db, acc, style_lints);
                     }
 
-                    acc.extend(def.diagnostics(db))
+                    acc.extend(def.diagnostics(db, style_lints))
                 }
                 ModuleDef::Adt(adt) => {
                     match adt {
@@ -586,17 +592,17 @@ impl Module {
                         }
                         Adt::Enum(e) => {
                             for v in e.variants(db) {
-                                acc.extend(ModuleDef::Variant(v).diagnostics(db));
+                                acc.extend(ModuleDef::Variant(v).diagnostics(db, style_lints));
                                 for diag in db.enum_variant_data_with_diagnostics(v.id).1.iter() {
                                     emit_def_diagnostic(db, acc, diag);
                                 }
                             }
                         }
                     }
-                    acc.extend(def.diagnostics(db))
+                    acc.extend(def.diagnostics(db, style_lints))
                 }
                 ModuleDef::Macro(m) => emit_macro_def_diagnostics(db, acc, m),
-                _ => acc.extend(def.diagnostics(db)),
+                _ => acc.extend(def.diagnostics(db, style_lints)),
             }
         }
         self.legacy_macros(db).into_iter().for_each(|m| emit_macro_def_diagnostics(db, acc, m));
@@ -737,7 +743,7 @@ impl Module {
             }
 
             for &item in &db.impl_data(impl_def.id).items {
-                AssocItem::from(item).diagnostics(db, acc);
+                AssocItem::from(item).diagnostics(db, acc, style_lints);
             }
         }
     }
@@ -1615,14 +1621,19 @@ impl DefWithBody {
         }
     }
 
-    pub fn diagnostics(self, db: &dyn HirDatabase, acc: &mut Vec<AnyDiagnostic>) {
+    pub fn diagnostics(
+        self,
+        db: &dyn HirDatabase,
+        acc: &mut Vec<AnyDiagnostic>,
+        style_lints: bool,
+    ) {
         db.unwind_if_cancelled();
         let krate = self.module(db).id.krate();
 
         let (body, source_map) = db.body_with_source_map(self.into());
 
         for (_, def_map) in body.blocks(db.upcast()) {
-            Module { id: def_map.module_id(DefMap::ROOT) }.diagnostics(db, acc);
+            Module { id: def_map.module_id(DefMap::ROOT) }.diagnostics(db, acc, style_lints);
         }
 
         for diag in source_map.diagnostics() {
@@ -1783,7 +1794,7 @@ impl DefWithBody {
             }
         }
 
-        for diagnostic in BodyValidationDiagnostic::collect(db, self.into()) {
+        for diagnostic in BodyValidationDiagnostic::collect(db, self.into(), style_lints) {
             acc.extend(AnyDiagnostic::body_validation_diagnostic(db, diagnostic, &source_map));
         }
 
@@ -2088,7 +2099,7 @@ impl From<hir_ty::Mutability> for Access {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Param {
     func: Function,
     /// The index in parameter list, including self parameter.
@@ -2097,6 +2108,14 @@ pub struct Param {
 }
 
 impl Param {
+    pub fn parent_fn(&self) -> Function {
+        self.func
+    }
+
+    pub fn index(&self) -> usize {
+        self.idx
+    }
+
     pub fn ty(&self) -> &Type {
         &self.ty
     }
@@ -2159,6 +2178,10 @@ impl SelfParam {
             .param_list()
             .and_then(|params| params.self_param())
             .map(|value| InFile { file_id, value })
+    }
+
+    pub fn parent_fn(&self) -> Function {
+        Function::from(self.func)
     }
 
     pub fn ty(&self, db: &dyn HirDatabase) -> Type {
@@ -2653,6 +2676,37 @@ impl ItemInNs {
     }
 }
 
+/// Invariant: `inner.as_extern_assoc_item(db).is_some()`
+/// We do not actively enforce this invariant.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ExternAssocItem {
+    Function(Function),
+    Static(Static),
+    TypeAlias(TypeAlias),
+}
+
+pub trait AsExternAssocItem {
+    fn as_extern_assoc_item(self, db: &dyn HirDatabase) -> Option<ExternAssocItem>;
+}
+
+impl AsExternAssocItem for Function {
+    fn as_extern_assoc_item(self, db: &dyn HirDatabase) -> Option<ExternAssocItem> {
+        as_extern_assoc_item(db, ExternAssocItem::Function, self.id)
+    }
+}
+
+impl AsExternAssocItem for Static {
+    fn as_extern_assoc_item(self, db: &dyn HirDatabase) -> Option<ExternAssocItem> {
+        as_extern_assoc_item(db, ExternAssocItem::Static, self.id)
+    }
+}
+
+impl AsExternAssocItem for TypeAlias {
+    fn as_extern_assoc_item(self, db: &dyn HirDatabase) -> Option<ExternAssocItem> {
+        as_extern_assoc_item(db, ExternAssocItem::TypeAlias, self.id)
+    }
+}
+
 /// Invariant: `inner.as_assoc_item(db).is_some()`
 /// We do not actively enforce this invariant.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -2724,6 +2778,63 @@ where
     match id.lookup(db.upcast()).container {
         ItemContainerId::TraitId(_) | ItemContainerId::ImplId(_) => Some(ctor(DEF::from(id))),
         ItemContainerId::ModuleId(_) | ItemContainerId::ExternBlockId(_) => None,
+    }
+}
+
+fn as_extern_assoc_item<'db, ID, DEF, LOC>(
+    db: &(dyn HirDatabase + 'db),
+    ctor: impl FnOnce(DEF) -> ExternAssocItem,
+    id: ID,
+) -> Option<ExternAssocItem>
+where
+    ID: Lookup<Database<'db> = dyn DefDatabase + 'db, Data = AssocItemLoc<LOC>>,
+    DEF: From<ID>,
+    LOC: ItemTreeNode,
+{
+    match id.lookup(db.upcast()).container {
+        ItemContainerId::ExternBlockId(_) => Some(ctor(DEF::from(id))),
+        ItemContainerId::TraitId(_) | ItemContainerId::ImplId(_) | ItemContainerId::ModuleId(_) => {
+            None
+        }
+    }
+}
+
+impl ExternAssocItem {
+    pub fn name(self, db: &dyn HirDatabase) -> Name {
+        match self {
+            Self::Function(it) => it.name(db),
+            Self::Static(it) => it.name(db),
+            Self::TypeAlias(it) => it.name(db),
+        }
+    }
+
+    pub fn module(self, db: &dyn HirDatabase) -> Module {
+        match self {
+            Self::Function(f) => f.module(db),
+            Self::Static(c) => c.module(db),
+            Self::TypeAlias(t) => t.module(db),
+        }
+    }
+
+    pub fn as_function(self) -> Option<Function> {
+        match self {
+            Self::Function(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn as_static(self) -> Option<Static> {
+        match self {
+            Self::Static(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn as_type_alias(self) -> Option<TypeAlias> {
+        match self {
+            Self::TypeAlias(v) => Some(v),
+            _ => None,
+        }
     }
 }
 
@@ -2808,13 +2919,18 @@ impl AssocItem {
         }
     }
 
-    pub fn diagnostics(self, db: &dyn HirDatabase, acc: &mut Vec<AnyDiagnostic>) {
+    pub fn diagnostics(
+        self,
+        db: &dyn HirDatabase,
+        acc: &mut Vec<AnyDiagnostic>,
+        style_lints: bool,
+    ) {
         match self {
             AssocItem::Function(func) => {
-                DefWithBody::from(func).diagnostics(db, acc);
+                DefWithBody::from(func).diagnostics(db, acc, style_lints);
             }
             AssocItem::Const(const_) => {
-                DefWithBody::from(const_).diagnostics(db, acc);
+                DefWithBody::from(const_).diagnostics(db, acc, style_lints);
             }
             AssocItem::TypeAlias(type_alias) => {
                 for diag in hir_ty::diagnostics::incorrect_case(db, type_alias.id.into()) {
@@ -3666,12 +3782,12 @@ impl ClosureCapture {
             hir_ty::CaptureKind::ByRef(
                 hir_ty::mir::BorrowKind::Shallow | hir_ty::mir::BorrowKind::Shared,
             ) => CaptureKind::SharedRef,
-            hir_ty::CaptureKind::ByRef(hir_ty::mir::BorrowKind::Unique) => {
-                CaptureKind::UniqueSharedRef
-            }
-            hir_ty::CaptureKind::ByRef(hir_ty::mir::BorrowKind::Mut { .. }) => {
-                CaptureKind::MutableRef
-            }
+            hir_ty::CaptureKind::ByRef(hir_ty::mir::BorrowKind::Mut {
+                kind: MutBorrowKind::ClosureCapture,
+            }) => CaptureKind::UniqueSharedRef,
+            hir_ty::CaptureKind::ByRef(hir_ty::mir::BorrowKind::Mut {
+                kind: MutBorrowKind::Default | MutBorrowKind::TwoPhasedBorrow,
+            }) => CaptureKind::MutableRef,
             hir_ty::CaptureKind::ByValue => CaptureKind::Move,
         }
     }
@@ -3768,6 +3884,11 @@ impl Type {
         Type { env: ty.env, ty: TyBuilder::slice(ty.ty) }
     }
 
+    pub fn new_tuple(krate: CrateId, tys: &[Type]) -> Type {
+        let tys = tys.iter().map(|it| it.ty.clone());
+        Type { env: TraitEnvironment::empty(krate), ty: TyBuilder::tuple_with(tys) }
+    }
+
     pub fn is_unit(&self) -> bool {
         matches!(self.ty.kind(Interner), TyKind::Tuple(0, ..))
     }
@@ -3798,9 +3919,9 @@ impl Type {
 
                 // For non-phantom_data adts we check variants/fields as well as generic parameters
                 TyKind::Adt(adt_id, substitution)
-                    if !db.struct_datum(krate, *adt_id).flags.phantom_data =>
+                    if !db.adt_datum(krate, *adt_id).flags.phantom_data =>
                 {
-                    let adt_datum = &db.struct_datum(krate, *adt_id);
+                    let adt_datum = &db.adt_datum(krate, *adt_id);
                     let adt_datum_bound =
                         adt_datum.binders.clone().substitute(Interner, substitution);
                     adt_datum_bound
@@ -4151,6 +4272,10 @@ impl Type {
         }
     }
 
+    pub fn fingerprint_for_trait_impl(&self) -> Option<TyFingerprint> {
+        TyFingerprint::for_trait_impl(&self.ty)
+    }
+
     pub(crate) fn canonical(&self) -> Canonical<Ty> {
         hir_ty::replace_errors_with_variables(&self.ty)
     }
@@ -4228,8 +4353,10 @@ impl Type {
         self.ty
             .strip_references()
             .as_adt()
+            .map(|(_, substs)| substs)
+            .or_else(|| self.ty.strip_references().as_tuple())
             .into_iter()
-            .flat_map(|(_, substs)| substs.iter(Interner))
+            .flat_map(|substs| substs.iter(Interner))
             .filter_map(|arg| arg.ty(Interner).cloned())
             .map(move |ty| self.derived(ty))
     }

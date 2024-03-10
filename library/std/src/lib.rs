@@ -84,7 +84,7 @@
 //!
 //! # Contributing changes to the documentation
 //!
-//! Check out the rust contribution guidelines [here](
+//! Check out the Rust contribution guidelines [here](
 //! https://rustc-dev-guide.rust-lang.org/contributing.html#writing-documentation).
 //! The source for this documentation can be found on
 //! [GitHub](https://github.com/rust-lang/rust).
@@ -270,6 +270,7 @@
 //
 // Language features:
 // tidy-alphabetical-start
+#![cfg_attr(bootstrap, feature(platform_intrinsics))]
 #![feature(alloc_error_handler)]
 #![feature(allocator_internals)]
 #![feature(allow_internal_unsafe)]
@@ -301,7 +302,6 @@
 #![feature(negative_impls)]
 #![feature(never_type)]
 #![feature(no_sanitize)]
-#![feature(platform_intrinsics)]
 #![feature(prelude_import)]
 #![feature(rustc_attrs)]
 #![feature(rustdoc_internals)]
@@ -314,6 +314,7 @@
 //
 // Library features (core):
 // tidy-alphabetical-start
+#![feature(c_str_module)]
 #![feature(char_internals)]
 #![feature(core_intrinsics)]
 #![feature(core_io_borrowed_buf)]

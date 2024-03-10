@@ -33,8 +33,10 @@ pub(crate) fn scalar_to_clif_type(tcx: TyCtxt<'_>, scalar: Scalar) -> Type {
             Integer::I64 => types::I64,
             Integer::I128 => types::I128,
         },
+        Primitive::F16 => unimplemented!("f16_f128"),
         Primitive::F32 => types::F32,
         Primitive::F64 => types::F64,
+        Primitive::F128 => unimplemented!("f16_f128"),
         // FIXME(erikdesjardins): handle non-default addrspace ptr sizes
         Primitive::Pointer(_) => pointer_ty(tcx),
     }
@@ -61,8 +63,10 @@ fn clif_type_from_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<types::Typ
         },
         ty::Char => types::I32,
         ty::Float(size) => match size {
+            FloatTy::F16 => unimplemented!("f16_f128"),
             FloatTy::F32 => types::F32,
             FloatTy::F64 => types::F64,
+            FloatTy::F128 => unimplemented!("f16_f128"),
         },
         ty::FnPtr(_) => pointer_ty(tcx),
         ty::RawPtr(TypeAndMut { ty: pointee_ty, mutbl: _ }) | ty::Ref(_, pointee_ty, _) => {
@@ -388,18 +392,25 @@ impl<'tcx> FunctionCx<'_, '_, 'tcx> {
     }
 
     pub(crate) fn create_stack_slot(&mut self, size: u32, align: u32) -> Pointer {
-        if align <= 16 {
+        let abi_align = if self.tcx.sess.target.arch == "s390x" { 8 } else { 16 };
+        if align <= abi_align {
             let stack_slot = self.bcx.create_sized_stack_slot(StackSlotData {
                 kind: StackSlotKind::ExplicitSlot,
-                // FIXME Don't force the size to a multiple of 16 bytes once Cranelift gets a way to
-                // specify stack slot alignment.
-                size: (size + 15) / 16 * 16,
+                // FIXME Don't force the size to a multiple of <abi_align> bytes once Cranelift gets
+                // a way to specify stack slot alignment.
+                size: (size + abi_align - 1) / abi_align * abi_align,
             });
             Pointer::stack_slot(stack_slot)
         } else {
             // Alignment is too big to handle using the above hack. Dynamically realign a stack slot
             // instead. This wastes some space for the realignment.
-            let base_ptr = self.create_stack_slot(size + align, 16).get_addr(self);
+            let stack_slot = self.bcx.create_sized_stack_slot(StackSlotData {
+                kind: StackSlotKind::ExplicitSlot,
+                // FIXME Don't force the size to a multiple of <abi_align> bytes once Cranelift gets
+                // a way to specify stack slot alignment.
+                size: (size + align) / abi_align * abi_align,
+            });
+            let base_ptr = self.bcx.ins().stack_addr(self.pointer_type, stack_slot, 0);
             let misalign_offset = self.bcx.ins().urem_imm(base_ptr, i64::from(align));
             let realign_offset = self.bcx.ins().irsub_imm(misalign_offset, i64::from(align));
             Pointer::new(self.bcx.ins().iadd(base_ptr, realign_offset))

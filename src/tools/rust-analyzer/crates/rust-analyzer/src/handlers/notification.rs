@@ -16,7 +16,7 @@ use crate::{
     config::Config,
     global_state::GlobalState,
     lsp::{from_proto, utils::apply_document_changes},
-    lsp_ext::RunFlycheckParams,
+    lsp_ext::{self, RunFlycheckParams},
     mem_docs::DocumentData,
     reload,
 };
@@ -90,18 +90,13 @@ pub(crate) fn handle_did_change_text_document(
     let _p = tracing::span!(tracing::Level::INFO, "handle_did_change_text_document").entered();
 
     if let Ok(path) = from_proto::vfs_path(&params.text_document.uri) {
-        let data = match state.mem_docs.get_mut(&path) {
-            Some(doc) => {
-                // The version passed in DidChangeTextDocument is the version after all edits are applied
-                // so we should apply it before the vfs is notified.
-                doc.version = params.text_document.version;
-                &mut doc.data
-            }
-            None => {
-                tracing::error!("unexpected DidChangeTextDocument: {}", path);
-                return Ok(());
-            }
+        let Some(DocumentData { version, data }) = state.mem_docs.get_mut(&path) else {
+            tracing::error!(?path, "unexpected DidChangeTextDocument");
+            return Ok(());
         };
+        // The version passed in DidChangeTextDocument is the version after all edits are applied
+        // so we should apply it before the vfs is notified.
+        *version = params.text_document.version;
 
         let new_contents = apply_document_changes(
             state.config.position_encoding(),
@@ -375,6 +370,13 @@ pub(crate) fn handle_run_flycheck(
     // No specific flycheck was triggered, so let's trigger all of them.
     for flycheck in state.flycheck.iter() {
         flycheck.restart_workspace(None);
+    }
+    Ok(())
+}
+
+pub(crate) fn handle_abort_run_test(state: &mut GlobalState, _: ()) -> anyhow::Result<()> {
+    if state.test_run_session.take().is_some() {
+        state.send_notification::<lsp_ext::EndRunTest>(());
     }
     Ok(())
 }

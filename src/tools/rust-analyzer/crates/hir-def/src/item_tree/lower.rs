@@ -2,16 +2,31 @@
 
 use std::collections::hash_map::Entry;
 
-use hir_expand::{ast_id_map::AstIdMap, span_map::SpanMapRef};
-use syntax::ast::{HasModuleItem, HasTypeBounds, IsString};
+use hir_expand::{mod_path::path, name, name::AsName, span_map::SpanMapRef, HirFileId};
+use la_arena::Arena;
+use span::{AstIdMap, SyntaxContextId};
+use syntax::{
+    ast::{self, HasModuleItem, HasName, HasTypeBounds, IsString},
+    AstNode,
+};
+use triomphe::Arc;
 
 use crate::{
-    generics::{GenericParamsCollector, TypeParamData, TypeParamProvenance},
-    type_ref::{LifetimeRef, TraitBoundModifier},
+    db::DefDatabase,
+    generics::{GenericParams, GenericParamsCollector, TypeParamData, TypeParamProvenance},
+    item_tree::{
+        AssocItem, AttrOwner, Const, Either, Enum, ExternBlock, ExternCrate, Field, FieldAstId,
+        Fields, FileItemTreeId, FnFlags, Function, GenericArgs, Idx, IdxRange, Impl, ImportAlias,
+        Interned, ItemTree, ItemTreeData, ItemTreeNode, Macro2, MacroCall, MacroRules, Mod,
+        ModItem, ModKind, ModPath, Mutability, Name, Param, ParamAstId, Path, Range, RawAttrs,
+        RawIdx, RawVisibilityId, Static, Struct, StructKind, Trait, TraitAlias, TypeAlias, Union,
+        Use, UseTree, UseTreeKind, Variant,
+    },
+    path::AssociatedTypeBinding,
+    type_ref::{LifetimeRef, TraitBoundModifier, TraitRef, TypeBound, TypeRef},
+    visibility::RawVisibility,
     LocalLifetimeParamId, LocalTypeOrConstParamId,
 };
-
-use super::*;
 
 fn id<N: ItemTreeNode>(index: Idx<N>) -> FileItemTreeId<N> {
     FileItemTreeId(index)
@@ -30,7 +45,7 @@ impl<'a> Ctx<'a> {
             db,
             tree: ItemTree::default(),
             source_ast_id_map: db.ast_id_map(file),
-            body_ctx: crate::lower::LowerCtx::with_file_id(db, file),
+            body_ctx: crate::lower::LowerCtx::new(db, file),
         }
     }
 
@@ -520,7 +535,9 @@ impl<'a> Ctx<'a> {
     fn lower_use(&mut self, use_item: &ast::Use) -> Option<FileItemTreeId<Use>> {
         let visibility = self.lower_visibility(use_item);
         let ast_id = self.source_ast_id_map.ast_id(use_item);
-        let (use_tree, _) = lower_use_tree(self.db, self.span_map(), use_item.use_tree()?)?;
+        let (use_tree, _) = lower_use_tree(self.db, use_item.use_tree()?, &mut |range| {
+            self.span_map().span_for_range(range).ctx
+        })?;
 
         let res = Use { visibility, ast_id, use_tree };
         Some(id(self.data().uses.alloc(res)))
@@ -543,7 +560,9 @@ impl<'a> Ctx<'a> {
 
     fn lower_macro_call(&mut self, m: &ast::MacroCall) -> Option<FileItemTreeId<MacroCall>> {
         let span_map = self.span_map();
-        let path = Interned::new(ModPath::from_src(self.db.upcast(), m.path()?, span_map)?);
+        let path = Interned::new(ModPath::from_src(self.db.upcast(), m.path()?, &mut |range| {
+            span_map.span_for_range(range).ctx
+        })?);
         let ast_id = self.source_ast_id_map.ast_id(m);
         let expand_to = hir_expand::ExpandTo::from_call_site(m);
         let res = MacroCall {
@@ -657,8 +676,9 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_visibility(&mut self, item: &dyn ast::HasVisibility) -> RawVisibilityId {
-        let vis =
-            RawVisibility::from_opt_ast_with_span_map(self.db, item.visibility(), self.span_map());
+        let vis = RawVisibility::from_ast(self.db, item.visibility(), &mut |range| {
+            self.span_map().span_for_range(range).ctx
+        });
         self.data().vis.alloc(vis)
     }
 
@@ -730,12 +750,15 @@ fn lower_abi(abi: ast::Abi) -> Interned<str> {
 
 struct UseTreeLowering<'a> {
     db: &'a dyn DefDatabase,
-    span_map: SpanMapRef<'a>,
     mapping: Arena<ast::UseTree>,
 }
 
 impl UseTreeLowering<'_> {
-    fn lower_use_tree(&mut self, tree: ast::UseTree) -> Option<UseTree> {
+    fn lower_use_tree(
+        &mut self,
+        tree: ast::UseTree,
+        span_for_range: &mut dyn FnMut(::tt::TextRange) -> SyntaxContextId,
+    ) -> Option<UseTree> {
         if let Some(use_tree_list) = tree.use_tree_list() {
             let prefix = match tree.path() {
                 // E.g. use something::{{{inner}}};
@@ -743,15 +766,17 @@ impl UseTreeLowering<'_> {
                 // E.g. `use something::{inner}` (prefix is `None`, path is `something`)
                 // or `use something::{path::{inner::{innerer}}}` (prefix is `something::path`, path is `inner`)
                 Some(path) => {
-                    match ModPath::from_src(self.db.upcast(), path, self.span_map) {
+                    match ModPath::from_src(self.db.upcast(), path, span_for_range) {
                         Some(it) => Some(it),
                         None => return None, // FIXME: report errors somewhere
                     }
                 }
             };
 
-            let list =
-                use_tree_list.use_trees().filter_map(|tree| self.lower_use_tree(tree)).collect();
+            let list = use_tree_list
+                .use_trees()
+                .filter_map(|tree| self.lower_use_tree(tree, span_for_range))
+                .collect();
 
             Some(
                 self.use_tree(
@@ -762,7 +787,7 @@ impl UseTreeLowering<'_> {
         } else {
             let is_glob = tree.star_token().is_some();
             let path = match tree.path() {
-                Some(path) => Some(ModPath::from_src(self.db.upcast(), path, self.span_map)?),
+                Some(path) => Some(ModPath::from_src(self.db.upcast(), path, span_for_range)?),
                 None => None,
             };
             let alias = tree.rename().map(|a| {
@@ -798,10 +823,10 @@ impl UseTreeLowering<'_> {
 
 pub(crate) fn lower_use_tree(
     db: &dyn DefDatabase,
-    span_map: SpanMapRef<'_>,
     tree: ast::UseTree,
+    span_for_range: &mut dyn FnMut(::tt::TextRange) -> SyntaxContextId,
 ) -> Option<(UseTree, Arena<ast::UseTree>)> {
-    let mut lowering = UseTreeLowering { db, span_map, mapping: Arena::new() };
-    let tree = lowering.lower_use_tree(tree)?;
+    let mut lowering = UseTreeLowering { db, mapping: Arena::new() };
+    let tree = lowering.lower_use_tree(tree, span_for_range)?;
     Some((tree, lowering.mapping))
 }

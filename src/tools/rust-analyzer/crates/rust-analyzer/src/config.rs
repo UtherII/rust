@@ -152,6 +152,13 @@ config_data! {
         // FIXME(@poliorcetics): move to multiple targets here too, but this will need more work
         // than `checkOnSave_target`
         cargo_target: Option<String>     = "null",
+        /// Optional path to a rust-analyzer specific target directory.
+        /// This prevents rust-analyzer's `cargo check` and initial build-script and proc-macro
+        /// building from locking the `Cargo.lock` at the expense of duplicating build artifacts.
+        ///
+        /// Set to `true` to use a subdirectory of the existing target directory or
+        /// set to a path relative to the workspace to use that path.
+        cargo_targetDir | rust_analyzerTargetDir: Option<TargetDirectory> = "null",
         /// Unsets the implicit `#[cfg(test)]` for the specified crates.
         cargo_unsetTest: Vec<String>     = "[\"core\"]",
 
@@ -304,6 +311,8 @@ config_data! {
         /// Map of prefixes to be substituted when parsing diagnostic file paths.
         /// This should be the reverse mapping of what is passed to `rustc` as `--remap-path-prefix`.
         diagnostics_remapPrefix: FxHashMap<String, String> = "{}",
+        /// Whether to run additional style lints.
+        diagnostics_styleLints_enable: bool =    "false",
         /// List of warnings that should be displayed with hint severity.
         ///
         /// The warnings will be indicated by faded text or three dots in code
@@ -367,6 +376,9 @@ config_data! {
         hover_memoryLayout_offset: Option<MemoryLayoutHoverRenderKindDef> = "\"hexadecimal\"",
         /// How to render the size information in a memory layout hover.
         hover_memoryLayout_size: Option<MemoryLayoutHoverRenderKindDef> = "\"both\"",
+
+        /// How many associated items of a trait to display when hovering a trait.
+        hover_show_traitAssocItems: Option<usize> = "null",
 
         /// Whether to enforce the import granularity setting for all files. If set to false rust-analyzer will try to keep import styles consistent per file.
         imports_granularity_enforce: bool              = "false",
@@ -511,20 +523,11 @@ config_data! {
         /// Exclude tests from find-all-references.
         references_excludeTests: bool = "false",
 
-
         /// Command to be executed instead of 'cargo' for runnables.
         runnables_command: Option<String> = "null",
         /// Additional arguments to be passed to cargo for runnables such as
         /// tests or binaries. For example, it may be `--release`.
         runnables_extraArgs: Vec<String>   = "[]",
-
-        /// Optional path to a rust-analyzer specific target directory.
-        /// This prevents rust-analyzer's `cargo check` from locking the `Cargo.lock`
-        /// at the expense of duplicating build artifacts.
-        ///
-        /// Set to `true` to use a subdirectory of the existing target directory or
-        /// set to a path relative to the workspace to use that path.
-        rust_analyzerTargetDir: Option<TargetDirectory> = "null",
 
         /// Path to the Cargo.toml of the rust compiler workspace, for usage in rustc_private
         /// projects, or "discover" to try to automatically find it if the `rustc-dev` component
@@ -1143,6 +1146,10 @@ impl Config {
         self.experimental("colorDiagnosticOutput")
     }
 
+    pub fn test_explorer(&self) -> bool {
+        self.experimental("testExplorer")
+    }
+
     pub fn publish_diagnostics(&self) -> bool {
         self.data.diagnostics_enable
     }
@@ -1161,6 +1168,7 @@ impl Config {
             insert_use: self.insert_use_config(),
             prefer_no_std: self.data.imports_preferNoStd,
             prefer_prelude: self.data.imports_preferPrelude,
+            style_lints: self.data.diagnostics_styleLints_enable,
         }
     }
 
@@ -1401,14 +1409,12 @@ impl Config {
         }
     }
 
-    // FIXME: This should be an AbsolutePathBuf
     fn target_dir_from_config(&self) -> Option<PathBuf> {
-        self.data.rust_analyzerTargetDir.as_ref().and_then(|target_dir| match target_dir {
-            TargetDirectory::UseSubdirectory(yes) if *yes => {
-                Some(PathBuf::from("target/rust-analyzer"))
-            }
-            TargetDirectory::UseSubdirectory(_) => None,
-            TargetDirectory::Directory(dir) => Some(dir.clone()),
+        self.data.cargo_targetDir.as_ref().and_then(|target_dir| match target_dir {
+            TargetDirectory::UseSubdirectory(true) => Some(PathBuf::from("target/rust-analyzer")),
+            TargetDirectory::UseSubdirectory(false) => None,
+            TargetDirectory::Directory(dir) if dir.is_relative() => Some(dir.clone()),
+            TargetDirectory::Directory(_) => None,
         })
     }
 
@@ -1683,6 +1689,7 @@ impl Config {
                 }
             },
             keywords: self.data.hover_documentation_keywords_enable,
+            max_trait_assoc_items_count: self.data.hover_show_traitAssocItems,
         }
     }
 
@@ -2745,7 +2752,7 @@ mod tests {
                 "rust": { "analyzerTargetDir": null }
             }))
             .unwrap();
-        assert_eq!(config.data.rust_analyzerTargetDir, None);
+        assert_eq!(config.data.cargo_targetDir, None);
         assert!(
             matches!(config.flycheck(), FlycheckConfig::CargoCommand { target_dir, .. } if target_dir.is_none())
         );
@@ -2764,10 +2771,7 @@ mod tests {
                 "rust": { "analyzerTargetDir": true }
             }))
             .unwrap();
-        assert_eq!(
-            config.data.rust_analyzerTargetDir,
-            Some(TargetDirectory::UseSubdirectory(true))
-        );
+        assert_eq!(config.data.cargo_targetDir, Some(TargetDirectory::UseSubdirectory(true)));
         assert!(
             matches!(config.flycheck(), FlycheckConfig::CargoCommand { target_dir, .. } if target_dir == Some(PathBuf::from("target/rust-analyzer")))
         );
@@ -2787,7 +2791,7 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(
-            config.data.rust_analyzerTargetDir,
+            config.data.cargo_targetDir,
             Some(TargetDirectory::Directory(PathBuf::from("other_folder")))
         );
         assert!(

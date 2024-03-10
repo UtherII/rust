@@ -56,6 +56,7 @@ pub enum LLVMMachineType {
     AMD64 = 0x8664,
     I386 = 0x14c,
     ARM64 = 0xaa64,
+    ARM64EC = 0xa641,
     ARM = 0x01c0,
 }
 
@@ -480,6 +481,9 @@ pub struct SanitizerOptions {
     pub sanitize_address: bool,
     pub sanitize_address_recover: bool,
     pub sanitize_cfi: bool,
+    pub sanitize_dataflow: bool,
+    pub sanitize_dataflow_abilist: *const *const c_char,
+    pub sanitize_dataflow_abilist_len: size_t,
     pub sanitize_kcfi: bool,
     pub sanitize_memory: bool,
     pub sanitize_memory_recover: bool,
@@ -858,8 +862,10 @@ extern "C" {
     pub fn LLVMGetIntTypeWidth(IntegerTy: &Type) -> c_uint;
 
     // Operations on real types
+    pub fn LLVMHalfTypeInContext(C: &Context) -> &Type;
     pub fn LLVMFloatTypeInContext(C: &Context) -> &Type;
     pub fn LLVMDoubleTypeInContext(C: &Context) -> &Type;
+    pub fn LLVMFP128TypeInContext(C: &Context) -> &Type;
 
     // Operations on function types
     pub fn LLVMFunctionType<'a>(
@@ -1301,13 +1307,6 @@ extern "C" {
         NumIndices: c_uint,
         Name: *const c_char,
     ) -> &'a Value;
-    pub fn LLVMBuildStructGEP2<'a>(
-        B: &Builder<'a>,
-        Ty: &'a Type,
-        Pointer: &'a Value,
-        Idx: c_uint,
-        Name: *const c_char,
-    ) -> &'a Value;
 
     // Casts
     pub fn LLVMBuildTrunc<'a>(
@@ -1617,8 +1616,23 @@ extern "C" {
         Name: *const c_char,
     ) -> &'a Value;
 
+    pub fn LLVMRustBuildCallBr<'a>(
+        B: &Builder<'a>,
+        Ty: &'a Type,
+        Fn: &'a Value,
+        DefaultDest: &'a BasicBlock,
+        IndirectDests: *const &'a BasicBlock,
+        NumIndirectDests: c_uint,
+        Args: *const &'a Value,
+        NumArgs: c_uint,
+        OpBundles: *const &OperandBundleDef<'a>,
+        NumOpBundles: c_uint,
+        Name: *const c_char,
+    ) -> &'a Value;
+
     pub fn LLVMRustSetFastMath(Instr: &Value);
     pub fn LLVMRustSetAlgebraicMath(Instr: &Value);
+    pub fn LLVMRustSetAllowReassoc(Instr: &Value);
 
     // Miscellaneous instructions
     pub fn LLVMRustGetInstrProfIncrementIntrinsic(M: &Module) -> &Value;
@@ -2255,7 +2269,7 @@ extern "C" {
     pub fn LLVMRustUnpackInlineAsmDiagnostic<'a>(
         DI: &'a DiagnosticInfo,
         level_out: &mut DiagnosticLevel,
-        cookie_out: &mut c_uint,
+        cookie_out: &mut u64,
         message_out: &mut Option<&'a Twine>,
     );
 

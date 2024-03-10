@@ -1221,6 +1221,7 @@ bitflags::bitflags! {
         const KCFI    = 1 << 8;
         const KERNELADDRESS = 1 << 9;
         const SAFESTACK = 1 << 10;
+        const DATAFLOW = 1 << 11;
     }
 }
 rustc_data_structures::external_bitflags_debug! { SanitizerSet }
@@ -1233,6 +1234,7 @@ impl SanitizerSet {
         Some(match self {
             SanitizerSet::ADDRESS => "address",
             SanitizerSet::CFI => "cfi",
+            SanitizerSet::DATAFLOW => "dataflow",
             SanitizerSet::KCFI => "kcfi",
             SanitizerSet::KERNELADDRESS => "kernel-address",
             SanitizerSet::LEAK => "leak",
@@ -1402,6 +1404,7 @@ supported_targets! {
     ("i686-unknown-linux-gnu", i686_unknown_linux_gnu),
     ("i586-unknown-linux-gnu", i586_unknown_linux_gnu),
     ("loongarch64-unknown-linux-gnu", loongarch64_unknown_linux_gnu),
+    ("loongarch64-unknown-linux-musl", loongarch64_unknown_linux_musl),
     ("m68k-unknown-linux-gnu", m68k_unknown_linux_gnu),
     ("csky-unknown-linux-gnuabiv2", csky_unknown_linux_gnuabiv2),
     ("csky-unknown-linux-gnuabiv2hf", csky_unknown_linux_gnuabiv2hf),
@@ -1562,6 +1565,7 @@ supported_targets! {
 
     ("aarch64-pc-windows-msvc", aarch64_pc_windows_msvc),
     ("aarch64-uwp-windows-msvc", aarch64_uwp_windows_msvc),
+    ("arm64ec-pc-windows-msvc", arm64ec_pc_windows_msvc),
     ("x86_64-pc-windows-msvc", x86_64_pc_windows_msvc),
     ("x86_64-uwp-windows-msvc", x86_64_uwp_windows_msvc),
     ("x86_64-win7-windows-msvc", x86_64_win7_windows_msvc),
@@ -1575,6 +1579,8 @@ supported_targets! {
     ("wasm32-unknown-emscripten", wasm32_unknown_emscripten),
     ("wasm32-unknown-unknown", wasm32_unknown_unknown),
     ("wasm32-wasi", wasm32_wasi),
+    ("wasm32-wasip1", wasm32_wasip1),
+    ("wasm32-wasip2", wasm32_wasip2),
     ("wasm32-wasi-preview1-threads", wasm32_wasi_preview1_threads),
     ("wasm64-unknown-unknown", wasm64_unknown_unknown),
 
@@ -1673,7 +1679,7 @@ supported_targets! {
 
     ("mips64-openwrt-linux-musl", mips64_openwrt_linux_musl),
 
-    ("aarch64-unknown-nto-qnx710", aarch64_unknown_nto_qnx_710),
+    ("aarch64-unknown-nto-qnx710", aarch64_unknown_nto_qnx710),
     ("x86_64-pc-nto-qnx710", x86_64_pc_nto_qnx710),
     ("i586-pc-nto-qnx700", i586_pc_nto_qnx700),
 
@@ -1737,6 +1743,11 @@ impl TargetWarnings {
 pub struct Target {
     /// Target triple to pass to LLVM.
     pub llvm_target: StaticCow<str>,
+    /// A short description of the target including platform requirements,
+    /// for example "64-bit Linux (kernel 3.2+, glibc 2.17+)".
+    /// Optional for now, intended to be required in the future.
+    /// Part of #120745.
+    pub description: Option<StaticCow<str>>,
     /// Number of bits in a pointer. Influences the `target_pointer_width` `cfg` variable.
     pub pointer_width: u32,
     /// Architecture to use for ABI considerations. Valid options include: "x86",
@@ -2448,7 +2459,6 @@ impl Target {
             | System { .. }
             | RustIntrinsic
             | RustCall
-            | PlatformIntrinsic
             | Unadjusted
             | Cdecl { .. }
             | RustCold => true,
@@ -2539,6 +2549,7 @@ impl Target {
 
         let mut base = Target {
             llvm_target: get_req_field("llvm-target")?.into(),
+            description: get_req_field("description").ok().map(Into::into),
             pointer_width: get_req_field("target-pointer-width")?
                 .parse::<u32>()
                 .map_err(|_| "target-pointer-width must be an integer".to_string())?,
@@ -2790,6 +2801,7 @@ impl Target {
                             base.$key_name |= match s.as_str() {
                                 Some("address") => SanitizerSet::ADDRESS,
                                 Some("cfi") => SanitizerSet::CFI,
+                                Some("dataflow") => SanitizerSet::DATAFLOW,
                                 Some("kcfi") => SanitizerSet::KCFI,
                                 Some("kernel-address") => SanitizerSet::KERNELADDRESS,
                                 Some("leak") => SanitizerSet::LEAK,
@@ -3241,6 +3253,7 @@ impl ToJson for Target {
         }
 
         target_val!(llvm_target);
+        target_val!(description);
         d.insert("target-pointer-width".to_string(), self.pointer_width.to_string().to_json());
         target_val!(arch);
         target_val!(data_layout);

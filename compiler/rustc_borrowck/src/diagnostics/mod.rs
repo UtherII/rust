@@ -5,7 +5,7 @@ use crate::session_diagnostics::{
     CaptureVarKind, CaptureVarPathUseCause, OnClosureNote,
 };
 use itertools::Itertools;
-use rustc_errors::{Applicability, DiagnosticBuilder};
+use rustc_errors::{Applicability, Diag};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, Namespace};
 use rustc_hir::CoroutineKind;
@@ -76,11 +76,12 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     /// LL |         for (key, value) in dict {
     ///    |                             ^^^^
     /// ```
+    #[allow(rustc::diagnostic_outside_of_impl)] // FIXME
     pub(super) fn add_moved_or_invoked_closure_note(
         &self,
         location: Location,
         place: PlaceRef<'tcx>,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
     ) -> bool {
         debug!("add_moved_or_invoked_closure_note: location={:?} place={:?}", location, place);
         let mut target = place.local_or_deref_local();
@@ -585,10 +586,11 @@ impl UseSpans<'_> {
     }
 
     /// Add a span label to the arguments of the closure, if it exists.
+    #[allow(rustc::diagnostic_outside_of_impl)]
     pub(super) fn args_subdiag(
         self,
         dcx: &rustc_errors::DiagCtxt,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         f: impl FnOnce(Span) -> CaptureArgLabel,
     ) {
         if let UseSpans::ClosureUse { args_span, .. } = self {
@@ -598,10 +600,11 @@ impl UseSpans<'_> {
 
     /// Add a span label to the use of the captured variable, if it exists.
     /// only adds label to the `path_span`
+    #[allow(rustc::diagnostic_outside_of_impl)]
     pub(super) fn var_path_only_subdiag(
         self,
         dcx: &rustc_errors::DiagCtxt,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         action: crate::InitializationRequiringAction,
     ) {
         use crate::InitializationRequiringAction::*;
@@ -635,10 +638,11 @@ impl UseSpans<'_> {
     }
 
     /// Add a subdiagnostic to the use of the captured variable, if it exists.
+    #[allow(rustc::diagnostic_outside_of_impl)]
     pub(super) fn var_subdiag(
         self,
         dcx: &rustc_errors::DiagCtxt,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         kind: Option<rustc_middle::mir::BorrowKind>,
         f: impl FnOnce(hir::ClosureKind, Span) -> CaptureVarCause,
     ) {
@@ -1008,9 +1012,11 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         self.borrow_spans(span, borrow.reserve_location)
     }
 
+    #[allow(rustc::diagnostic_outside_of_impl)]
+    #[allow(rustc::untranslatable_diagnostic)] // FIXME: make this translatable
     fn explain_captures(
         &mut self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diag<'_>,
         span: Span,
         move_span: Span,
         move_spans: UseSpans<'tcx>,

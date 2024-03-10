@@ -68,7 +68,7 @@ impl Name {
         Self::new_text(lt.text().into())
     }
 
-    /// Shortcut to create inline plain text name. Panics if `text.len() > 22`
+    /// Shortcut to create a name from a string literal.
     const fn new_static(text: &'static str) -> Name {
         Name::new_text(SmolStr::new_static(text))
     }
@@ -111,15 +111,11 @@ impl Name {
         self == &Name::missing()
     }
 
-    /// Generates a new name which is only equal to itself, by incrementing a counter. Due
-    /// its implementation, it should not be used in things that salsa considers, like
-    /// type names or field names, and it should be only used in names of local variables
-    /// and labels and similar things.
-    pub fn generate_new_name() -> Name {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static CNT: AtomicUsize = AtomicUsize::new(0);
-        let c = CNT.fetch_add(1, Ordering::Relaxed);
-        Name::new_text(format_smolstr!("<ra@gennew>{c}"))
+    /// Generates a new name that attempts to be unique. Should only be used when body lowering and
+    /// creating desugared locals and labels. The caller is responsible for picking an index
+    /// that is stable across re-executions
+    pub fn generate_new_name(idx: usize) -> Name {
+        Name::new_text(format_smolstr!("<ra@gennew>{idx}"))
     }
 
     /// Returns the tuple index this name represents if it is a tuple field.

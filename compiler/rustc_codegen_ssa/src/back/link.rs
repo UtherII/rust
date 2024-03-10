@@ -3,7 +3,7 @@ use rustc_ast::CRATE_NODE_ID;
 use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use rustc_data_structures::memmap::Mmap;
 use rustc_data_structures::temp_dir::MaybeTempDir;
-use rustc_errors::{DiagCtxt, ErrorGuaranteed};
+use rustc_errors::{DiagCtxt, ErrorGuaranteed, FatalError};
 use rustc_fs_util::{fix_windows_verbatim_for_gcc, try_canonicalize};
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_metadata::find_native_static_library;
@@ -308,15 +308,18 @@ fn link_rlib<'a>(
     codegen_results: &CodegenResults,
     flavor: RlibFlavor,
     tmpdir: &MaybeTempDir,
-) -> Result<Box<dyn ArchiveBuilder<'a> + 'a>, ErrorGuaranteed> {
+) -> Result<Box<dyn ArchiveBuilder + 'a>, ErrorGuaranteed> {
     let lib_search_paths = archive_search_paths(sess);
 
     let mut ab = archive_builder_builder.new_archive_builder(sess);
 
     let trailing_metadata = match flavor {
         RlibFlavor::Normal => {
-            let (metadata, metadata_position) =
-                create_wrapper_file(sess, b".rmeta".to_vec(), codegen_results.metadata.raw_data());
+            let (metadata, metadata_position) = create_wrapper_file(
+                sess,
+                ".rmeta".to_string(),
+                codegen_results.metadata.raw_data(),
+            );
             let metadata = emit_wrapper_file(sess, &metadata, tmpdir, METADATA_FILENAME);
             match metadata_position {
                 MetadataPosition::First => {
@@ -384,7 +387,7 @@ fn link_rlib<'a>(
             let path = find_native_static_library(filename.as_str(), true, &lib_search_paths, sess);
             let src = read(path)
                 .map_err(|e| sess.dcx().emit_fatal(errors::ReadFileError { message: e }))?;
-            let (data, _) = create_wrapper_file(sess, b".bundled_lib".to_vec(), &src);
+            let (data, _) = create_wrapper_file(sess, ".bundled_lib".to_string(), &src);
             let wrapper_file = emit_wrapper_file(sess, &data, tmpdir, filename.as_str());
             packed_bundled_libs.push(wrapper_file);
         } else {
@@ -487,7 +490,9 @@ fn collate_raw_dylibs<'a, 'b>(
             }
         }
     }
-    sess.compile_status()?;
+    if let Some(guar) = sess.dcx().has_errors() {
+        return Err(guar);
+    }
     Ok(dylib_table
         .into_iter()
         .map(|(name, imports)| {
@@ -720,10 +725,7 @@ fn link_dwarf_object<'a>(
         Ok(())
     }) {
         Ok(()) => {}
-        Err(e) => {
-            sess.dcx().emit_err(errors::ThorinErrorWrapper(e));
-            sess.dcx().abort_if_errors();
-        }
+        Err(e) => sess.dcx().emit_fatal(errors::ThorinErrorWrapper(e)),
     }
 }
 
@@ -999,7 +1001,7 @@ fn link_natively<'a>(
                 sess.dcx().emit_note(errors::CheckInstalledVisualStudio);
                 sess.dcx().emit_note(errors::InsufficientVSCodeProduct);
             }
-            sess.dcx().abort_if_errors();
+            FatalError.raise();
         }
     }
 
@@ -1218,6 +1220,9 @@ fn add_sanitizer_libraries(
     let sanitizer = sess.opts.unstable_opts.sanitizer;
     if sanitizer.contains(SanitizerSet::ADDRESS) {
         link_sanitizer_runtime(sess, flavor, linker, "asan");
+    }
+    if sanitizer.contains(SanitizerSet::DATAFLOW) {
+        link_sanitizer_runtime(sess, flavor, linker, "dfsan");
     }
     if sanitizer.contains(SanitizerSet::LEAK) {
         link_sanitizer_runtime(sess, flavor, linker, "lsan");

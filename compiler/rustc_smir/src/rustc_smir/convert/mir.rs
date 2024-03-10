@@ -251,13 +251,19 @@ impl<'tcx> Stable<'tcx> for mir::NullOp<'tcx> {
     type T = stable_mir::mir::NullOp;
     fn stable(&self, tables: &mut Tables<'_>) -> Self::T {
         use rustc_middle::mir::NullOp::*;
+        use rustc_middle::mir::UbKind;
         match self {
             SizeOf => stable_mir::mir::NullOp::SizeOf,
             AlignOf => stable_mir::mir::NullOp::AlignOf,
             OffsetOf(indices) => stable_mir::mir::NullOp::OffsetOf(
                 indices.iter().map(|idx| idx.stable(tables)).collect(),
             ),
-            DebugAssertions => stable_mir::mir::NullOp::DebugAssertions,
+            UbCheck(UbKind::LanguageUb) => {
+                stable_mir::mir::NullOp::UbCheck(stable_mir::mir::UbKind::LanguageUb)
+            }
+            UbCheck(UbKind::LibraryUb) => {
+                stable_mir::mir::NullOp::UbCheck(stable_mir::mir::UbKind::LibraryUb)
+            }
         }
     }
 }
@@ -559,7 +565,8 @@ impl<'tcx> Stable<'tcx> for mir::InlineAsmOperand<'tcx> {
             }
             InlineAsmOperand::Const { .. }
             | InlineAsmOperand::SymFn { .. }
-            | InlineAsmOperand::SymStatic { .. } => (None, None),
+            | InlineAsmOperand::SymStatic { .. }
+            | InlineAsmOperand::Label { .. } => (None, None),
         };
 
         stable_mir::mir::InlineAsmOperand { in_value, out_place, raw_rpr: format!("{self:?}") }
@@ -632,14 +639,15 @@ impl<'tcx> Stable<'tcx> for mir::TerminatorKind<'tcx> {
                 operands,
                 options,
                 line_spans,
-                destination,
+                targets,
                 unwind,
             } => TerminatorKind::InlineAsm {
                 template: format!("{template:?}"),
                 operands: operands.iter().map(|operand| operand.stable(tables)).collect(),
                 options: format!("{options:?}"),
                 line_spans: format!("{line_spans:?}"),
-                destination: destination.map(|d| d.as_usize()),
+                // FIXME: Figure out how to do labels in SMIR
+                destination: targets.first().map(|d| d.as_usize()),
                 unwind: unwind.stable(tables),
             },
             mir::TerminatorKind::Yield { .. }

@@ -1,10 +1,20 @@
 //! MIR lowering for patterns
 
-use hir_def::AssocItemId;
+use hir_def::{hir::LiteralOrConst, resolver::HasResolver, AssocItemId};
 
-use crate::BindingMode;
-
-use super::*;
+use crate::{
+    mir::{
+        lower::{
+            BasicBlockId, BinOp, BindingId, BorrowKind, Either, Expr, FieldId, Idx, Interner,
+            MemoryMap, MirLowerCtx, MirLowerError, MirSpan, Mutability, Operand, Pat, PatId, Place,
+            PlaceElem, ProjectionElem, RecordFieldPat, ResolveValueResult, Result, Rvalue,
+            Substitution, SwitchTargets, TerminatorKind, TupleFieldId, TupleId, TyBuilder, TyKind,
+            ValueNs, VariantData, VariantId,
+        },
+        MutBorrowKind,
+    },
+    BindingMode,
+};
 
 macro_rules! not_supported {
     ($x: expr) => {
@@ -443,7 +453,7 @@ impl MirLowerCtx<'_> {
                 BindingMode::Move => Operand::Copy(cond_place).into(),
                 BindingMode::Ref(Mutability::Not) => Rvalue::Ref(BorrowKind::Shared, cond_place),
                 BindingMode::Ref(Mutability::Mut) => {
-                    Rvalue::Ref(BorrowKind::Mut { allow_two_phase_borrow: false }, cond_place)
+                    Rvalue::Ref(BorrowKind::Mut { kind: MutBorrowKind::Default }, cond_place)
                 }
             },
             span,

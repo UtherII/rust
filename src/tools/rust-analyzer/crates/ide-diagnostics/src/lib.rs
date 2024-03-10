@@ -41,6 +41,7 @@ mod handlers {
     pub(crate) mod moved_out_of_ref;
     pub(crate) mod mutability_errors;
     pub(crate) mod no_such_field;
+    pub(crate) mod non_exhaustive_let;
     pub(crate) mod private_assoc_item;
     pub(crate) mod private_field;
     pub(crate) mod remove_trailing_return;
@@ -58,6 +59,7 @@ mod handlers {
     pub(crate) mod unresolved_assoc_item;
     pub(crate) mod unresolved_extern_crate;
     pub(crate) mod unresolved_field;
+    pub(crate) mod unresolved_ident;
     pub(crate) mod unresolved_import;
     pub(crate) mod unresolved_macro_call;
     pub(crate) mod unresolved_method;
@@ -140,7 +142,7 @@ pub struct Diagnostic {
     pub experimental: bool,
     pub fixes: Option<Vec<Assist>>,
     // The node that will be affected by `#[allow]` and similar attributes.
-    pub main_node: Option<InFile<SyntaxNode>>,
+    pub main_node: Option<InFile<SyntaxNodePtr>>,
 }
 
 impl Diagnostic {
@@ -172,9 +174,8 @@ impl Diagnostic {
         message: impl Into<String>,
         node: InFile<SyntaxNodePtr>,
     ) -> Diagnostic {
-        let file_id = node.file_id;
         Diagnostic::new(code, message, ctx.sema.diagnostics_display_range(node))
-            .with_main_node(node.map(|x| x.to_node(&ctx.sema.parse_or_expand(file_id))))
+            .with_main_node(node)
     }
 
     fn experimental(mut self) -> Diagnostic {
@@ -182,7 +183,7 @@ impl Diagnostic {
         self
     }
 
-    fn with_main_node(mut self, main_node: InFile<SyntaxNode>) -> Diagnostic {
+    fn with_main_node(mut self, main_node: InFile<SyntaxNodePtr>) -> Diagnostic {
         self.main_node = Some(main_node);
         self
     }
@@ -226,6 +227,7 @@ pub struct DiagnosticsConfig {
     pub disable_experimental: bool,
     pub disabled: FxHashSet<String>,
     pub expr_fill_default: ExprFillDefaultMode,
+    pub style_lints: bool,
     // FIXME: We may want to include a whole `AssistConfig` here
     pub insert_use: InsertUseConfig,
     pub prefer_no_std: bool,
@@ -244,6 +246,7 @@ impl DiagnosticsConfig {
             disable_experimental: Default::default(),
             disabled: Default::default(),
             expr_fill_default: Default::default(),
+            style_lints: true,
             insert_use: InsertUseConfig {
                 granularity: ImportGranularity::Preserve,
                 enforce_granularity: false,
@@ -298,7 +301,7 @@ pub fn diagnostics(
     let mut res = Vec::new();
 
     // [#34344] Only take first 128 errors to prevent slowing down editor/ide, the number 128 is chosen arbitrarily.
-    res.extend(parse.errors().iter().take(128).map(|err| {
+    res.extend(parse.errors().into_iter().take(128).map(|err| {
         Diagnostic::new(
             DiagnosticCode::RustcHardError("syntax-error"),
             format!("Syntax Error: {err}"),
@@ -314,7 +317,7 @@ pub fn diagnostics(
         handlers::json_is_not_rust::json_in_items(&sema, &mut res, file_id, &node, config);
     }
 
-    let module = sema.to_module_def(file_id);
+    let module = sema.file_to_module_def(file_id);
 
     let ctx = DiagnosticsContext { config, sema, resolve };
     if module.is_none() {
@@ -323,7 +326,7 @@ pub fn diagnostics(
 
     let mut diags = Vec::new();
     if let Some(m) = module {
-        m.diagnostics(db, &mut diags);
+        m.diagnostics(db, &mut diags, config.style_lints);
     }
 
     for diag in diags {
@@ -359,6 +362,7 @@ pub fn diagnostics(
             AnyDiagnostic::MissingUnsafe(d) => handlers::missing_unsafe::missing_unsafe(&ctx, &d),
             AnyDiagnostic::MovedOutOfRef(d) => handlers::moved_out_of_ref::moved_out_of_ref(&ctx, &d),
             AnyDiagnostic::NeedMut(d) => handlers::mutability_errors::need_mut(&ctx, &d),
+            AnyDiagnostic::NonExhaustiveLet(d) => handlers::non_exhaustive_let::non_exhaustive_let(&ctx, &d),
             AnyDiagnostic::NoSuchField(d) => handlers::no_such_field::no_such_field(&ctx, &d),
             AnyDiagnostic::PrivateAssocItem(d) => handlers::private_assoc_item::private_assoc_item(&ctx, &d),
             AnyDiagnostic::PrivateField(d) => handlers::private_field::private_field(&ctx, &d),
@@ -375,6 +379,7 @@ pub fn diagnostics(
             AnyDiagnostic::UnresolvedAssocItem(d) => handlers::unresolved_assoc_item::unresolved_assoc_item(&ctx, &d),
             AnyDiagnostic::UnresolvedExternCrate(d) => handlers::unresolved_extern_crate::unresolved_extern_crate(&ctx, &d),
             AnyDiagnostic::UnresolvedField(d) => handlers::unresolved_field::unresolved_field(&ctx, &d),
+            AnyDiagnostic::UnresolvedIdent(d) => handlers::unresolved_ident::unresolved_ident(&ctx, &d),
             AnyDiagnostic::UnresolvedImport(d) => handlers::unresolved_import::unresolved_import(&ctx, &d),
             AnyDiagnostic::UnresolvedMacroCall(d) => handlers::unresolved_macro_call::unresolved_macro_call(&ctx, &d),
             AnyDiagnostic::UnresolvedMethodCall(d) => handlers::unresolved_method::unresolved_method(&ctx, &d),
@@ -390,8 +395,17 @@ pub fn diagnostics(
         res.push(d)
     }
 
-    let mut diagnostics_of_range =
-        res.iter_mut().filter_map(|x| Some((x.main_node.clone()?, x))).collect::<FxHashMap<_, _>>();
+    let mut diagnostics_of_range = res
+        .iter_mut()
+        .filter_map(|it| {
+            Some((
+                it.main_node
+                    .map(|ptr| ptr.map(|node| node.to_node(&ctx.sema.parse_or_expand(ptr.file_id))))
+                    .clone()?,
+                it,
+            ))
+        })
+        .collect::<FxHashMap<_, _>>();
 
     let mut rustc_stack: FxHashMap<String, Vec<Severity>> = FxHashMap::default();
     let mut clippy_stack: FxHashMap<String, Vec<Severity>> = FxHashMap::default();

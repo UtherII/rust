@@ -12,7 +12,7 @@ use itertools::Itertools;
 use la_arena::{Arena, Idx};
 use paths::{AbsPath, AbsPathBuf};
 use rustc_hash::FxHashMap;
-use toolchain::probe_for_binary;
+use toolchain::{probe_for_binary, Tool};
 
 use crate::{utf8_stdout, CargoConfig, CargoWorkspace, ManifestPath};
 
@@ -193,9 +193,25 @@ impl Sysroot {
         Ok(Sysroot::load(sysroot_dir, Some(sysroot_src_dir), metadata))
     }
 
-    pub fn set_rustup_toolchain_env(cmd: &mut Command, sysroot: Option<&Self>) {
-        if let Some(sysroot) = sysroot {
-            cmd.env("RUSTUP_TOOLCHAIN", AsRef::<std::path::Path>::as_ref(&sysroot.root));
+    /// Returns a command to run a tool preferring the cargo proxies if the sysroot exists.
+    pub fn tool(sysroot: Option<&Self>, tool: Tool) -> Command {
+        match sysroot {
+            Some(sysroot) => {
+                // special case rustc, we can look that up directly in the sysroot's bin folder
+                // as it should never invoke another cargo binary
+                if let Tool::Rustc = tool {
+                    if let Some(path) =
+                        probe_for_binary(sysroot.root.join("bin").join(Tool::Rustc.name()).into())
+                    {
+                        return Command::new(path);
+                    }
+                }
+
+                let mut cmd = Command::new(tool.prefer_proxy());
+                cmd.env("RUSTUP_TOOLCHAIN", AsRef::<std::path::Path>::as_ref(&sysroot.root));
+                cmd
+            }
+            _ => Command::new(tool.path()),
         }
     }
 
@@ -398,7 +414,7 @@ fn discover_sysroot_dir(
     current_dir: &AbsPath,
     extra_env: &FxHashMap<String, String>,
 ) -> Result<AbsPathBuf> {
-    let mut rustc = Command::new(toolchain::rustc());
+    let mut rustc = Command::new(Tool::Rustc.path());
     rustc.envs(extra_env);
     rustc.current_dir(current_dir).args(["--print", "sysroot"]);
     tracing::debug!("Discovering sysroot by {:?}", rustc);
@@ -430,7 +446,7 @@ fn discover_sysroot_src_dir_or_add_component(
 ) -> Result<AbsPathBuf> {
     discover_sysroot_src_dir(sysroot_path)
         .or_else(|| {
-            let mut rustup = Command::new(toolchain::rustup());
+            let mut rustup = Command::new(Tool::Rustup.prefer_proxy());
             rustup.envs(extra_env);
             rustup.current_dir(current_dir).args(["component", "add", "rust-src"]);
             tracing::info!("adding rust-src component by {:?}", rustup);

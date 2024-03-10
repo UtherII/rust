@@ -1,7 +1,7 @@
 use crate::snippet::Style;
 use crate::{
-    CodeSuggestion, DiagCtxt, DiagnosticMessage, ErrCode, ErrorGuaranteed, ExplicitBug, Level,
-    MultiSpan, StashKey, SubdiagnosticMessage, Substitution, SubstitutionPart, SuggestionStyle,
+    CodeSuggestion, DiagCtxt, DiagMessage, ErrCode, ErrorGuaranteed, ExplicitBug, Level, MultiSpan,
+    StashKey, SubdiagMessage, Substitution, SubstitutionPart, SuggestionStyle,
 };
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_error_messages::fluent_value_from_str_list_sep_by_and;
@@ -18,23 +18,23 @@ use std::ops::{Deref, DerefMut};
 use std::panic;
 use std::thread::panicking;
 
-/// Error type for `Diagnostic`'s `suggestions` field, indicating that
-/// `.disable_suggestions()` was called on the `Diagnostic`.
+/// Error type for `DiagInner`'s `suggestions` field, indicating that
+/// `.disable_suggestions()` was called on the `DiagInner`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Encodable, Decodable)]
 pub struct SuggestionsDisabled;
 
 /// Simplified version of `FluentArg` that can implement `Encodable` and `Decodable`. Collection of
-/// `DiagnosticArg` are converted to `FluentArgs` (consuming the collection) at the start of
-/// diagnostic emission.
-pub type DiagnosticArg<'iter> = (&'iter DiagnosticArgName, &'iter DiagnosticArgValue);
+/// `DiagArg` are converted to `FluentArgs` (consuming the collection) at the start of diagnostic
+/// emission.
+pub type DiagArg<'iter> = (&'iter DiagArgName, &'iter DiagArgValue);
 
 /// Name of a diagnostic argument.
-pub type DiagnosticArgName = Cow<'static, str>;
+pub type DiagArgName = Cow<'static, str>;
 
 /// Simplified version of `FluentValue` that can implement `Encodable` and `Decodable`. Converted
 /// to a `FluentValue` by the emitter to be used in diagnostic translation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Encodable, Decodable)]
-pub enum DiagnosticArgValue {
+pub enum DiagArgValue {
     Str(Cow<'static, str>),
     // This gets converted to a `FluentNumber`, which is an `f64`. An `i32`
     // safely fits in an `f64`. Any integers bigger than that will be converted
@@ -43,29 +43,31 @@ pub enum DiagnosticArgValue {
     StrListSepByAnd(Vec<Cow<'static, str>>),
 }
 
-/// Trait for types that `DiagnosticBuilder::emit` can return as a "guarantee"
-/// (or "proof") token that the emission happened.
+pub type DiagArgMap = FxIndexMap<DiagArgName, DiagArgValue>;
+
+/// Trait for types that `Diag::emit` can return as a "guarantee" (or "proof")
+/// token that the emission happened.
 pub trait EmissionGuarantee: Sized {
     /// This exists so that bugs and fatal errors can both result in `!` (an
     /// abort) when emitted, but have different aborting behaviour.
     type EmitResult = Self;
 
-    /// Implementation of `DiagnosticBuilder::emit`, fully controlled by each
-    /// `impl` of `EmissionGuarantee`, to make it impossible to create a value
-    /// of `Self::EmitResult` without actually performing the emission.
+    /// Implementation of `Diag::emit`, fully controlled by each `impl` of
+    /// `EmissionGuarantee`, to make it impossible to create a value of
+    /// `Self::EmitResult` without actually performing the emission.
     #[track_caller]
-    fn emit_producing_guarantee(db: DiagnosticBuilder<'_, Self>) -> Self::EmitResult;
+    fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult;
 }
 
 impl EmissionGuarantee for ErrorGuaranteed {
-    fn emit_producing_guarantee(db: DiagnosticBuilder<'_, Self>) -> Self::EmitResult {
-        db.emit_producing_error_guaranteed()
+    fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
+        diag.emit_producing_error_guaranteed()
     }
 }
 
 impl EmissionGuarantee for () {
-    fn emit_producing_guarantee(db: DiagnosticBuilder<'_, Self>) -> Self::EmitResult {
-        db.emit_producing_nothing();
+    fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
+        diag.emit_producing_nothing();
     }
 }
 
@@ -77,8 +79,8 @@ pub struct BugAbort;
 impl EmissionGuarantee for BugAbort {
     type EmitResult = !;
 
-    fn emit_producing_guarantee(db: DiagnosticBuilder<'_, Self>) -> Self::EmitResult {
-        db.emit_producing_nothing();
+    fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
+        diag.emit_producing_nothing();
         panic::panic_any(ExplicitBug);
     }
 }
@@ -91,26 +93,45 @@ pub struct FatalAbort;
 impl EmissionGuarantee for FatalAbort {
     type EmitResult = !;
 
-    fn emit_producing_guarantee(db: DiagnosticBuilder<'_, Self>) -> Self::EmitResult {
-        db.emit_producing_nothing();
+    fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
+        diag.emit_producing_nothing();
         crate::FatalError.raise()
     }
 }
 
 impl EmissionGuarantee for rustc_span::fatal_error::FatalError {
-    fn emit_producing_guarantee(db: DiagnosticBuilder<'_, Self>) -> Self::EmitResult {
-        db.emit_producing_nothing();
+    fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
+        diag.emit_producing_nothing();
         rustc_span::fatal_error::FatalError
     }
 }
 
 /// Trait implemented by error types. This is rarely implemented manually. Instead, use
 /// `#[derive(Diagnostic)]` -- see [rustc_macros::Diagnostic].
+///
+/// When implemented manually, it should be generic over the emission
+/// guarantee, i.e.:
+/// ```ignore (fragment)
+/// impl<'a, G: EmissionGuarantee> IntoDiagnostic<'a, G> for Foo { ... }
+/// ```
+/// rather than being specific:
+/// ```ignore (fragment)
+/// impl<'a> IntoDiagnostic<'a> for Bar { ... }  // the default type param is `ErrorGuaranteed`
+/// impl<'a> IntoDiagnostic<'a, ()> for Baz { ... }
+/// ```
+/// There are two reasons for this.
+/// - A diagnostic like `Foo` *could* be emitted at any level -- `level` is
+///   passed in to `into_diagnostic` from outside. Even if in practice it is
+///   always emitted at a single level, we let the diagnostic creation/emission
+///   site determine the level (by using `create_err`, `emit_warn`, etc.)
+///   rather than the `IntoDiagnostic` impl.
+/// - Derived impls are always generic, and it's good for the hand-written
+///   impls to be consistent with them.
 #[rustc_diagnostic_item = "IntoDiagnostic"]
 pub trait IntoDiagnostic<'a, G: EmissionGuarantee = ErrorGuaranteed> {
     /// Write out as a diagnostic out of `DiagCtxt`.
     #[must_use]
-    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> DiagnosticBuilder<'a, G>;
+    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> Diag<'a, G>;
 }
 
 impl<'a, T, G> IntoDiagnostic<'a, G> for Spanned<T>
@@ -118,31 +139,31 @@ where
     T: IntoDiagnostic<'a, G>,
     G: EmissionGuarantee,
 {
-    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> DiagnosticBuilder<'a, G> {
+    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> Diag<'a, G> {
         self.node.into_diagnostic(dcx, level).with_span(self.span)
     }
 }
 
-/// Converts a value of a type into a `DiagnosticArg` (typically a field of an `IntoDiagnostic`
-/// struct). Implemented as a custom trait rather than `From` so that it is implemented on the type
-/// being converted rather than on `DiagnosticArgValue`, which enables types from other `rustc_*`
-/// crates to implement this.
+/// Converts a value of a type into a `DiagArg` (typically a field of an `IntoDiagnostic` struct).
+/// Implemented as a custom trait rather than `From` so that it is implemented on the type being
+/// converted rather than on `DiagArgValue`, which enables types from other `rustc_*` crates to
+/// implement this.
 pub trait IntoDiagnosticArg {
-    fn into_diagnostic_arg(self) -> DiagnosticArgValue;
+    fn into_diagnostic_arg(self) -> DiagArgValue;
 }
 
-impl IntoDiagnosticArg for DiagnosticArgValue {
-    fn into_diagnostic_arg(self) -> DiagnosticArgValue {
+impl IntoDiagnosticArg for DiagArgValue {
+    fn into_diagnostic_arg(self) -> DiagArgValue {
         self
     }
 }
 
-impl Into<FluentValue<'static>> for DiagnosticArgValue {
+impl Into<FluentValue<'static>> for DiagArgValue {
     fn into(self) -> FluentValue<'static> {
         match self {
-            DiagnosticArgValue::Str(s) => From::from(s),
-            DiagnosticArgValue::Number(n) => From::from(n),
-            DiagnosticArgValue::StrListSepByAnd(l) => fluent_value_from_str_list_sep_by_and(l),
+            DiagArgValue::Str(s) => From::from(s),
+            DiagArgValue::Number(n) => From::from(n),
+            DiagArgValue::StrListSepByAnd(l) => fluent_value_from_str_list_sep_by_and(l),
         }
     }
 }
@@ -155,48 +176,47 @@ where
     Self: Sized,
 {
     /// Add a subdiagnostic to an existing diagnostic.
-    fn add_to_diagnostic<G: EmissionGuarantee>(self, diag: &mut DiagnosticBuilder<'_, G>) {
+    fn add_to_diagnostic<G: EmissionGuarantee>(self, diag: &mut Diag<'_, G>) {
         self.add_to_diagnostic_with(diag, |_, m| m);
     }
 
     /// Add a subdiagnostic to an existing diagnostic where `f` is invoked on every message used
     /// (to optionally perform eager translation).
-    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagnosticMessageOp<G>>(
+    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
         self,
-        diag: &mut DiagnosticBuilder<'_, G>,
+        diag: &mut Diag<'_, G>,
         f: F,
     );
 }
 
-pub trait SubdiagnosticMessageOp<G> =
-    Fn(&mut DiagnosticBuilder<'_, G>, SubdiagnosticMessage) -> SubdiagnosticMessage;
+pub trait SubdiagMessageOp<G> = Fn(&mut Diag<'_, G>, SubdiagMessage) -> SubdiagMessage;
 
 /// Trait implemented by lint types. This should not be implemented manually. Instead, use
 /// `#[derive(LintDiagnostic)]` -- see [rustc_macros::LintDiagnostic].
 #[rustc_diagnostic_item = "DecorateLint"]
 pub trait DecorateLint<'a, G: EmissionGuarantee> {
     /// Decorate and emit a lint.
-    fn decorate_lint<'b>(self, diag: &'b mut DiagnosticBuilder<'a, G>);
+    fn decorate_lint<'b>(self, diag: &'b mut Diag<'a, G>);
 
-    fn msg(&self) -> DiagnosticMessage;
+    fn msg(&self) -> DiagMessage;
 }
 
 #[derive(Clone, Debug, Encodable, Decodable)]
-pub struct DiagnosticLocation {
+pub struct DiagLocation {
     file: Cow<'static, str>,
     line: u32,
     col: u32,
 }
 
-impl DiagnosticLocation {
+impl DiagLocation {
     #[track_caller]
     fn caller() -> Self {
         let loc = panic::Location::caller();
-        DiagnosticLocation { file: loc.file().into(), line: loc.line(), col: loc.column() }
+        DiagLocation { file: loc.file().into(), line: loc.line(), col: loc.column() }
     }
 }
 
-impl fmt::Display for DiagnosticLocation {
+impl fmt::Display for DiagLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}:{}", self.file, self.line, self.col)
     }
@@ -211,11 +231,11 @@ pub struct IsLint {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct DiagnosticStyledString(pub Vec<StringPart>);
+pub struct DiagStyledString(pub Vec<StringPart>);
 
-impl DiagnosticStyledString {
-    pub fn new() -> DiagnosticStyledString {
-        DiagnosticStyledString(vec![])
+impl DiagStyledString {
+    pub fn new() -> DiagStyledString {
+        DiagStyledString(vec![])
     }
     pub fn push_normal<S: Into<String>>(&mut self, t: S) {
         self.0.push(StringPart::normal(t));
@@ -230,12 +250,12 @@ impl DiagnosticStyledString {
             self.push_normal(t);
         }
     }
-    pub fn normal<S: Into<String>>(t: S) -> DiagnosticStyledString {
-        DiagnosticStyledString(vec![StringPart::normal(t)])
+    pub fn normal<S: Into<String>>(t: S) -> DiagStyledString {
+        DiagStyledString(vec![StringPart::normal(t)])
     }
 
-    pub fn highlighted<S: Into<String>>(t: S) -> DiagnosticStyledString {
-        DiagnosticStyledString(vec![StringPart::highlighted(t)])
+    pub fn highlighted<S: Into<String>>(t: S) -> DiagStyledString {
+        DiagStyledString(vec![StringPart::highlighted(t)])
     }
 
     pub fn content(&self) -> String {
@@ -259,23 +279,23 @@ impl StringPart {
     }
 }
 
-/// The main part of a diagnostic. Note that `DiagnosticBuilder`, which wraps
-/// this type, is used for most operations, and should be used instead whenever
-/// possible. This type should only be used when `DiagnosticBuilder`'s lifetime
-/// causes difficulties, e.g. when storing diagnostics within `DiagCtxt`.
+/// The main part of a diagnostic. Note that `Diag`, which wraps this type, is
+/// used for most operations, and should be used instead whenever possible.
+/// This type should only be used when `Diag`'s lifetime causes difficulties,
+/// e.g. when storing diagnostics within `DiagCtxt`.
 #[must_use]
 #[derive(Clone, Debug, Encodable, Decodable)]
-pub struct Diagnostic {
+pub struct DiagInner {
     // NOTE(eddyb) this is private to disallow arbitrary after-the-fact changes,
     // outside of what methods in this crate themselves allow.
     pub(crate) level: Level,
 
-    pub messages: Vec<(DiagnosticMessage, Style)>,
+    pub messages: Vec<(DiagMessage, Style)>,
     pub code: Option<ErrCode>,
     pub span: MultiSpan,
-    pub children: Vec<SubDiagnostic>,
+    pub children: Vec<Subdiag>,
     pub suggestions: Result<Vec<CodeSuggestion>, SuggestionsDisabled>,
-    args: FxIndexMap<DiagnosticArgName, DiagnosticArgValue>,
+    pub args: DiagArgMap,
 
     /// This is not used for highlighting or rendering any error message. Rather, it can be used
     /// as a sort key to sort a buffer of diagnostics. By default, it is the primary span of
@@ -286,18 +306,18 @@ pub struct Diagnostic {
 
     /// With `-Ztrack_diagnostics` enabled,
     /// we print where in rustc this error was emitted.
-    pub(crate) emitted_at: DiagnosticLocation,
+    pub(crate) emitted_at: DiagLocation,
 }
 
-impl Diagnostic {
+impl DiagInner {
     #[track_caller]
-    pub fn new<M: Into<DiagnosticMessage>>(level: Level, message: M) -> Self {
-        Diagnostic::new_with_messages(level, vec![(message.into(), Style::NoStyle)])
+    pub fn new<M: Into<DiagMessage>>(level: Level, message: M) -> Self {
+        DiagInner::new_with_messages(level, vec![(message.into(), Style::NoStyle)])
     }
 
     #[track_caller]
-    pub fn new_with_messages(level: Level, messages: Vec<(DiagnosticMessage, Style)>) -> Self {
-        Diagnostic {
+    pub fn new_with_messages(level: Level, messages: Vec<(DiagMessage, Style)>) -> Self {
+        DiagInner {
             level,
             messages,
             code: None,
@@ -307,7 +327,7 @@ impl Diagnostic {
             args: Default::default(),
             sort_span: DUMMY_SP,
             is_lint: None,
-            emitted_at: DiagnosticLocation::caller(),
+            emitted_at: DiagLocation::caller(),
         }
     }
 
@@ -372,11 +392,11 @@ impl Diagnostic {
         }
     }
 
-    // See comment on `DiagnosticBuilder::subdiagnostic_message_to_diagnostic_message`.
+    // See comment on `Diag::subdiagnostic_message_to_diagnostic_message`.
     pub(crate) fn subdiagnostic_message_to_diagnostic_message(
         &self,
-        attr: impl Into<SubdiagnosticMessage>,
-    ) -> DiagnosticMessage {
+        attr: impl Into<SubdiagMessage>,
+    ) -> DiagMessage {
         let msg =
             self.messages.iter().map(|(msg, _)| msg).next().expect("diagnostic with no messages");
         msg.with_subdiagnostic_message(attr.into())
@@ -385,10 +405,10 @@ impl Diagnostic {
     pub(crate) fn sub(
         &mut self,
         level: Level,
-        message: impl Into<SubdiagnosticMessage>,
+        message: impl Into<SubdiagMessage>,
         span: MultiSpan,
     ) {
-        let sub = SubDiagnostic {
+        let sub = Subdiag {
             level,
             messages: vec![(
                 self.subdiagnostic_message_to_diagnostic_message(message),
@@ -399,16 +419,8 @@ impl Diagnostic {
         self.children.push(sub);
     }
 
-    pub(crate) fn arg(&mut self, name: impl Into<DiagnosticArgName>, arg: impl IntoDiagnosticArg) {
+    pub(crate) fn arg(&mut self, name: impl Into<DiagArgName>, arg: impl IntoDiagnosticArg) {
         self.args.insert(name.into(), arg.into_diagnostic_arg());
-    }
-
-    pub fn args(&self) -> impl Iterator<Item = DiagnosticArg<'_>> {
-        self.args.iter()
-    }
-
-    pub fn replace_args(&mut self, args: FxIndexMap<DiagnosticArgName, DiagnosticArgValue>) {
-        self.args = args;
     }
 
     /// Fields used for Hash, and PartialEq trait.
@@ -416,12 +428,12 @@ impl Diagnostic {
         &self,
     ) -> (
         &Level,
-        &[(DiagnosticMessage, Style)],
+        &[(DiagMessage, Style)],
         &Option<ErrCode>,
         &MultiSpan,
-        &[SubDiagnostic],
+        &[Subdiag],
         &Result<Vec<CodeSuggestion>, SuggestionsDisabled>,
-        Vec<(&DiagnosticArgName, &DiagnosticArgValue)>,
+        Vec<(&DiagArgName, &DiagArgValue)>,
         &Option<IsLint>,
     ) {
         (
@@ -431,7 +443,7 @@ impl Diagnostic {
             &self.span,
             &self.children,
             &self.suggestions,
-            self.args().collect(),
+            self.args.iter().collect(),
             // omit self.sort_span
             &self.is_lint,
             // omit self.emitted_at
@@ -439,7 +451,7 @@ impl Diagnostic {
     }
 }
 
-impl Hash for Diagnostic {
+impl Hash for DiagInner {
     fn hash<H>(&self, state: &mut H)
     where
         H: Hasher,
@@ -448,7 +460,7 @@ impl Hash for Diagnostic {
     }
 }
 
-impl PartialEq for Diagnostic {
+impl PartialEq for DiagInner {
     fn eq(&self, other: &Self) -> bool {
         self.keys() == other.keys()
     }
@@ -457,75 +469,70 @@ impl PartialEq for Diagnostic {
 /// A "sub"-diagnostic attached to a parent diagnostic.
 /// For example, a note attached to an error.
 #[derive(Clone, Debug, PartialEq, Hash, Encodable, Decodable)]
-pub struct SubDiagnostic {
+pub struct Subdiag {
     pub level: Level,
-    pub messages: Vec<(DiagnosticMessage, Style)>,
+    pub messages: Vec<(DiagMessage, Style)>,
     pub span: MultiSpan,
 }
 
 /// Used for emitting structured error messages and other diagnostic information.
-/// Wraps a `Diagnostic`, adding some useful things.
+/// Wraps a `DiagInner`, adding some useful things.
 /// - The `dcx` field, allowing it to (a) emit itself, and (b) do a drop check
 ///   that it has been emitted or cancelled.
 /// - The `EmissionGuarantee`, which determines the type returned from `emit`.
 ///
-/// Each constructed `DiagnosticBuilder` must be consumed by a function such as
-/// `emit`, `cancel`, `delay_as_bug`, or `into_diagnostic`. A panic occurrs if a
-/// `DiagnosticBuilder` is dropped without being consumed by one of these
-/// functions.
+/// Each constructed `Diag` must be consumed by a function such as `emit`,
+/// `cancel`, `delay_as_bug`, or `into_diagnostic`. A panic occurrs if a `Diag`
+/// is dropped without being consumed by one of these functions.
 ///
-/// If there is some state in a downstream crate you would like to
-/// access in the methods of `DiagnosticBuilder` here, consider
-/// extending `DiagCtxtFlags`.
+/// If there is some state in a downstream crate you would like to access in
+/// the methods of `Diag` here, consider extending `DiagCtxtFlags`.
 #[must_use]
-pub struct DiagnosticBuilder<'a, G: EmissionGuarantee = ErrorGuaranteed> {
+pub struct Diag<'a, G: EmissionGuarantee = ErrorGuaranteed> {
     pub dcx: &'a DiagCtxt,
 
-    /// Why the `Option`? It is always `Some` until the `DiagnosticBuilder` is
-    /// consumed via `emit`, `cancel`, etc. At that point it is consumed and
-    /// replaced with `None`. Then `drop` checks that it is `None`; if not, it
-    /// panics because a diagnostic was built but not used.
+    /// Why the `Option`? It is always `Some` until the `Diag` is consumed via
+    /// `emit`, `cancel`, etc. At that point it is consumed and replaced with
+    /// `None`. Then `drop` checks that it is `None`; if not, it panics because
+    /// a diagnostic was built but not used.
     ///
-    /// Why the Box? `Diagnostic` is a large type, and `DiagnosticBuilder` is
-    /// often used as a return value, especially within the frequently-used
-    /// `PResult` type. In theory, return value optimization (RVO) should avoid
-    /// unnecessary copying. In practice, it does not (at the time of writing).
-    diag: Option<Box<Diagnostic>>,
+    /// Why the Box? `DiagInner` is a large type, and `Diag` is often used as a
+    /// return value, especially within the frequently-used `PResult` type. In
+    /// theory, return value optimization (RVO) should avoid unnecessary
+    /// copying. In practice, it does not (at the time of writing).
+    diag: Option<Box<DiagInner>>,
 
     _marker: PhantomData<G>,
 }
 
-// Cloning a `DiagnosticBuilder` is a recipe for a diagnostic being emitted
-// twice, which would be bad.
-impl<G> !Clone for DiagnosticBuilder<'_, G> {}
+// Cloning a `Diag` is a recipe for a diagnostic being emitted twice, which
+// would be bad.
+impl<G> !Clone for Diag<'_, G> {}
 
-rustc_data_structures::static_assert_size!(
-    DiagnosticBuilder<'_, ()>,
-    2 * std::mem::size_of::<usize>()
-);
+rustc_data_structures::static_assert_size!(Diag<'_, ()>, 2 * std::mem::size_of::<usize>());
 
-impl<G: EmissionGuarantee> Deref for DiagnosticBuilder<'_, G> {
-    type Target = Diagnostic;
+impl<G: EmissionGuarantee> Deref for Diag<'_, G> {
+    type Target = DiagInner;
 
-    fn deref(&self) -> &Diagnostic {
+    fn deref(&self) -> &DiagInner {
         self.diag.as_ref().unwrap()
     }
 }
 
-impl<G: EmissionGuarantee> DerefMut for DiagnosticBuilder<'_, G> {
-    fn deref_mut(&mut self) -> &mut Diagnostic {
+impl<G: EmissionGuarantee> DerefMut for Diag<'_, G> {
+    fn deref_mut(&mut self) -> &mut DiagInner {
         self.diag.as_mut().unwrap()
     }
 }
 
-impl<G: EmissionGuarantee> Debug for DiagnosticBuilder<'_, G> {
+impl<G: EmissionGuarantee> Debug for Diag<'_, G> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.diag.fmt(f)
     }
 }
 
-/// `DiagnosticBuilder` impls many `&mut self -> &mut Self` methods. Each one
-/// modifies an existing diagnostic, either in a standalone fashion, e.g.
+/// `Diag` impls many `&mut self -> &mut Self` methods. Each one modifies an
+/// existing diagnostic, either in a standalone fashion, e.g.
 /// `err.code(code);`, or in a chained fashion to make multiple modifications,
 /// e.g. `err.code(code).span(span);`.
 ///
@@ -552,14 +559,14 @@ macro_rules! with_fn {
     } => {
         // The original function.
         $(#[$attrs])*
-        #[doc = concat!("See [`DiagnosticBuilder::", stringify!($f), "()`].")]
+        #[doc = concat!("See [`Diag::", stringify!($f), "()`].")]
         pub fn $f(&mut $self, $($name: $ty),*) -> &mut Self {
             $($body)*
         }
 
         // The `with_*` variant.
         $(#[$attrs])*
-        #[doc = concat!("See [`DiagnosticBuilder::", stringify!($f), "()`].")]
+        #[doc = concat!("See [`Diag::", stringify!($f), "()`].")]
         pub fn $with_f(mut $self, $($name: $ty),*) -> Self {
             $self.$f($($name),*);
             $self
@@ -567,17 +574,16 @@ macro_rules! with_fn {
     };
 }
 
-impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
+impl<'a, G: EmissionGuarantee> Diag<'a, G> {
     #[rustc_lint_diagnostics]
     #[track_caller]
-    pub fn new<M: Into<DiagnosticMessage>>(dcx: &'a DiagCtxt, level: Level, message: M) -> Self {
-        Self::new_diagnostic(dcx, Diagnostic::new(level, message))
+    pub fn new(dcx: &'a DiagCtxt, level: Level, message: impl Into<DiagMessage>) -> Self {
+        Self::new_diagnostic(dcx, DiagInner::new(level, message))
     }
 
-    /// Creates a new `DiagnosticBuilder` with an already constructed
-    /// diagnostic.
+    /// Creates a new `Diag` with an already constructed diagnostic.
     #[track_caller]
-    pub(crate) fn new_diagnostic(dcx: &'a DiagCtxt, diag: Diagnostic) -> Self {
+    pub(crate) fn new_diagnostic(dcx: &'a DiagCtxt, diag: DiagInner) -> Self {
         debug!("Created new diagnostic");
         Self { dcx, diag: Some(Box::new(diag)), _marker: PhantomData }
     }
@@ -592,6 +598,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     ///
     /// In the meantime, though, callsites are required to deal with the "bug"
     /// locally in whichever way makes the most sense.
+    #[rustc_lint_diagnostics]
     #[track_caller]
     pub fn downgrade_to_delayed_bug(&mut self) {
         assert!(
@@ -616,7 +623,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// ["primary span"][`MultiSpan`]; only the `Span` supplied when creating the diagnostic is
     /// primary.
     #[rustc_lint_diagnostics]
-    pub fn span_label(&mut self, span: Span, label: impl Into<SubdiagnosticMessage>) -> &mut Self {
+    pub fn span_label(&mut self, span: Span, label: impl Into<SubdiagMessage>) -> &mut Self {
         let msg = self.subdiagnostic_message_to_diagnostic_message(label);
         self.span.push_span_label(span, msg);
         self
@@ -625,6 +632,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     with_fn! { with_span_labels,
     /// Labels all the given spans with the provided label.
     /// See [`Self::span_label()`] for more information.
+    #[rustc_lint_diagnostics]
     pub fn span_labels(&mut self, spans: impl IntoIterator<Item = Span>, label: &str) -> &mut Self {
         for span in spans {
             self.span_label(span, label.to_string());
@@ -632,6 +640,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         self
     } }
 
+    #[rustc_lint_diagnostics]
     pub fn replace_span_with(&mut self, after: Span, keep_label: bool) -> &mut Self {
         let before = self.span.clone();
         self.span(after);
@@ -647,22 +656,24 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         self
     }
 
+    #[rustc_lint_diagnostics]
     pub fn note_expected_found(
         &mut self,
         expected_label: &dyn fmt::Display,
-        expected: DiagnosticStyledString,
+        expected: DiagStyledString,
         found_label: &dyn fmt::Display,
-        found: DiagnosticStyledString,
+        found: DiagStyledString,
     ) -> &mut Self {
         self.note_expected_found_extra(expected_label, expected, found_label, found, &"", &"")
     }
 
+    #[rustc_lint_diagnostics]
     pub fn note_expected_found_extra(
         &mut self,
         expected_label: &dyn fmt::Display,
-        expected: DiagnosticStyledString,
+        expected: DiagStyledString,
         found_label: &dyn fmt::Display,
-        found: DiagnosticStyledString,
+        found: DiagStyledString,
         expected_extra: &dyn fmt::Display,
         found_extra: &dyn fmt::Display,
     ) -> &mut Self {
@@ -699,6 +710,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         self
     }
 
+    #[rustc_lint_diagnostics]
     pub fn note_trait_signature(&mut self, name: Symbol, signature: String) -> &mut Self {
         self.highlighted_note(vec![
             StringPart::normal(format!("`{name}` from trait: `")),
@@ -711,41 +723,44 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     with_fn! { with_note,
     /// Add a note attached to this diagnostic.
     #[rustc_lint_diagnostics]
-    pub fn note(&mut self, msg: impl Into<SubdiagnosticMessage>) -> &mut Self {
+    pub fn note(&mut self, msg: impl Into<SubdiagMessage>) -> &mut Self {
         self.sub(Level::Note, msg, MultiSpan::new());
         self
     } }
 
+    #[rustc_lint_diagnostics]
     fn highlighted_note(&mut self, msg: Vec<StringPart>) -> &mut Self {
         self.sub_with_highlights(Level::Note, msg, MultiSpan::new());
         self
     }
 
-    /// This is like [`DiagnosticBuilder::note()`], but it's only printed once.
-    pub fn note_once(&mut self, msg: impl Into<SubdiagnosticMessage>) -> &mut Self {
+    /// This is like [`Diag::note()`], but it's only printed once.
+    #[rustc_lint_diagnostics]
+    pub fn note_once(&mut self, msg: impl Into<SubdiagMessage>) -> &mut Self {
         self.sub(Level::OnceNote, msg, MultiSpan::new());
         self
     }
 
     with_fn! { with_span_note,
     /// Prints the span with a note above it.
-    /// This is like [`DiagnosticBuilder::note()`], but it gets its own span.
+    /// This is like [`Diag::note()`], but it gets its own span.
     #[rustc_lint_diagnostics]
     pub fn span_note(
         &mut self,
         sp: impl Into<MultiSpan>,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
     ) -> &mut Self {
         self.sub(Level::Note, msg, sp.into());
         self
     } }
 
     /// Prints the span with a note above it.
-    /// This is like [`DiagnosticBuilder::note_once()`], but it gets its own span.
+    /// This is like [`Diag::note_once()`], but it gets its own span.
+    #[rustc_lint_diagnostics]
     pub fn span_note_once<S: Into<MultiSpan>>(
         &mut self,
         sp: S,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
     ) -> &mut Self {
         self.sub(Level::OnceNote, msg, sp.into());
         self
@@ -754,18 +769,18 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     with_fn! { with_warn,
     /// Add a warning attached to this diagnostic.
     #[rustc_lint_diagnostics]
-    pub fn warn(&mut self, msg: impl Into<SubdiagnosticMessage>) -> &mut Self {
+    pub fn warn(&mut self, msg: impl Into<SubdiagMessage>) -> &mut Self {
         self.sub(Level::Warning, msg, MultiSpan::new());
         self
     } }
 
     /// Prints the span with a warning above it.
-    /// This is like [`DiagnosticBuilder::warn()`], but it gets its own span.
+    /// This is like [`Diag::warn()`], but it gets its own span.
     #[rustc_lint_diagnostics]
     pub fn span_warn<S: Into<MultiSpan>>(
         &mut self,
         sp: S,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
     ) -> &mut Self {
         self.sub(Level::Warning, msg, sp.into());
         self
@@ -774,30 +789,32 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     with_fn! { with_help,
     /// Add a help message attached to this diagnostic.
     #[rustc_lint_diagnostics]
-    pub fn help(&mut self, msg: impl Into<SubdiagnosticMessage>) -> &mut Self {
+    pub fn help(&mut self, msg: impl Into<SubdiagMessage>) -> &mut Self {
         self.sub(Level::Help, msg, MultiSpan::new());
         self
     } }
 
-    /// This is like [`DiagnosticBuilder::help()`], but it's only printed once.
-    pub fn help_once(&mut self, msg: impl Into<SubdiagnosticMessage>) -> &mut Self {
+    /// This is like [`Diag::help()`], but it's only printed once.
+    #[rustc_lint_diagnostics]
+    pub fn help_once(&mut self, msg: impl Into<SubdiagMessage>) -> &mut Self {
         self.sub(Level::OnceHelp, msg, MultiSpan::new());
         self
     }
 
     /// Add a help message attached to this diagnostic with a customizable highlighted message.
+    #[rustc_lint_diagnostics]
     pub fn highlighted_help(&mut self, msg: Vec<StringPart>) -> &mut Self {
         self.sub_with_highlights(Level::Help, msg, MultiSpan::new());
         self
     }
 
     /// Prints the span with some help above it.
-    /// This is like [`DiagnosticBuilder::help()`], but it gets its own span.
+    /// This is like [`Diag::help()`], but it gets its own span.
     #[rustc_lint_diagnostics]
     pub fn span_help<S: Into<MultiSpan>>(
         &mut self,
         sp: S,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
     ) -> &mut Self {
         self.sub(Level::Help, msg, sp.into());
         self
@@ -806,12 +823,14 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// Disallow attaching suggestions this diagnostic.
     /// Any suggestions attached e.g. with the `span_suggestion_*` methods
     /// (before and after the call to `disable_suggestions`) will be ignored.
+    #[rustc_lint_diagnostics]
     pub fn disable_suggestions(&mut self) -> &mut Self {
         self.suggestions = Err(SuggestionsDisabled);
         self
     }
 
     /// Helper for pushing to `self.suggestions`, if available (not disable).
+    #[rustc_lint_diagnostics]
     fn push_suggestion(&mut self, suggestion: CodeSuggestion) {
         for subst in &suggestion.substitutions {
             for part in &subst.parts {
@@ -832,9 +851,10 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     with_fn! { with_multipart_suggestion,
     /// Show a suggestion that has multiple parts to it.
     /// In other words, multiple changes need to be applied as part of this suggestion.
+    #[rustc_lint_diagnostics]
     pub fn multipart_suggestion(
         &mut self,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: Vec<(Span, String)>,
         applicability: Applicability,
     ) -> &mut Self {
@@ -848,9 +868,10 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
 
     /// Show a suggestion that has multiple parts to it, always as it's own subdiagnostic.
     /// In other words, multiple changes need to be applied as part of this suggestion.
+    #[rustc_lint_diagnostics]
     pub fn multipart_suggestion_verbose(
         &mut self,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: Vec<(Span, String)>,
         applicability: Applicability,
     ) -> &mut Self {
@@ -862,10 +883,11 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         )
     }
 
-    /// [`DiagnosticBuilder::multipart_suggestion()`] but you can set the [`SuggestionStyle`].
+    /// [`Diag::multipart_suggestion()`] but you can set the [`SuggestionStyle`].
+    #[rustc_lint_diagnostics]
     pub fn multipart_suggestion_with_style(
         &mut self,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         mut suggestion: Vec<(Span, String)>,
         applicability: Applicability,
         style: SuggestionStyle,
@@ -905,9 +927,10 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// be from the message, showing the span label inline would be visually unpleasant
     /// (marginally overlapping spans or multiline spans) and showing the snippet window wouldn't
     /// improve understandability.
+    #[rustc_lint_diagnostics]
     pub fn tool_only_multipart_suggestion(
         &mut self,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: Vec<(Span, String)>,
         applicability: Applicability,
     ) -> &mut Self {
@@ -937,10 +960,11 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// * may contain a name of a function, variable, or type, but not whole expressions
     ///
     /// See `CodeSuggestion` for more information.
+    #[rustc_lint_diagnostics]
     pub fn span_suggestion(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: impl ToString,
         applicability: Applicability,
     ) -> &mut Self {
@@ -954,11 +978,12 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         self
     } }
 
-    /// [`DiagnosticBuilder::span_suggestion()`] but you can set the [`SuggestionStyle`].
+    /// [`Diag::span_suggestion()`] but you can set the [`SuggestionStyle`].
+    #[rustc_lint_diagnostics]
     pub fn span_suggestion_with_style(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: impl ToString,
         applicability: Applicability,
         style: SuggestionStyle,
@@ -980,10 +1005,11 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
 
     with_fn! { with_span_suggestion_verbose,
     /// Always show the suggested change.
+    #[rustc_lint_diagnostics]
     pub fn span_suggestion_verbose(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: impl ToString,
         applicability: Applicability,
     ) -> &mut Self {
@@ -999,11 +1025,12 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
 
     with_fn! { with_span_suggestions,
     /// Prints out a message with multiple suggested edits of the code.
-    /// See also [`DiagnosticBuilder::span_suggestion()`].
+    /// See also [`Diag::span_suggestion()`].
+    #[rustc_lint_diagnostics]
     pub fn span_suggestions(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestions: impl IntoIterator<Item = String>,
         applicability: Applicability,
     ) -> &mut Self {
@@ -1016,10 +1043,11 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         )
     } }
 
+    #[rustc_lint_diagnostics]
     pub fn span_suggestions_with_style(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestions: impl IntoIterator<Item = String>,
         applicability: Applicability,
         style: SuggestionStyle,
@@ -1045,10 +1073,11 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
 
     /// Prints out a message with multiple suggested edits of the code, where each edit consists of
     /// multiple parts.
-    /// See also [`DiagnosticBuilder::multipart_suggestion()`].
+    /// See also [`Diag::multipart_suggestion()`].
+    #[rustc_lint_diagnostics]
     pub fn multipart_suggestions(
         &mut self,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestions: impl IntoIterator<Item = Vec<(Span, String)>>,
         applicability: Applicability,
     ) -> &mut Self {
@@ -1092,10 +1121,11 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// inline, it will only show the message and not the suggestion.
     ///
     /// See `CodeSuggestion` for more information.
+    #[rustc_lint_diagnostics]
     pub fn span_suggestion_short(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: impl ToString,
         applicability: Applicability,
     ) -> &mut Self {
@@ -1115,10 +1145,11 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// be from the message, showing the span label inline would be visually unpleasant
     /// (marginally overlapping spans or multiline spans) and showing the snippet window wouldn't
     /// improve understandability.
+    #[rustc_lint_diagnostics]
     pub fn span_suggestion_hidden(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: impl ToString,
         applicability: Applicability,
     ) -> &mut Self {
@@ -1141,7 +1172,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     pub fn tool_only_span_suggestion(
         &mut self,
         sp: Span,
-        msg: impl Into<SubdiagnosticMessage>,
+        msg: impl Into<SubdiagMessage>,
         suggestion: impl ToString,
         applicability: Applicability,
     ) -> &mut Self {
@@ -1159,13 +1190,14 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// [rustc_macros::Subdiagnostic]). Performs eager translation of any translatable messages
     /// used in the subdiagnostic, so suitable for use with repeated messages (i.e. re-use of
     /// interpolated variables).
+    #[rustc_lint_diagnostics]
     pub fn subdiagnostic(
         &mut self,
         dcx: &crate::DiagCtxt,
         subdiagnostic: impl AddToDiagnostic,
     ) -> &mut Self {
         subdiagnostic.add_to_diagnostic_with(self, |diag, msg| {
-            let args = diag.args();
+            let args = diag.args.iter();
             let msg = diag.subdiagnostic_message_to_diagnostic_message(msg);
             dcx.eagerly_translate(msg, args)
         });
@@ -1174,6 +1206,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
 
     with_fn! { with_span,
     /// Add a span.
+    #[rustc_lint_diagnostics]
     pub fn span(&mut self, sp: impl Into<MultiSpan>) -> &mut Self {
         self.span = sp.into();
         if let Some(span) = self.span.primary_span() {
@@ -1182,6 +1215,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         self
     } }
 
+    #[rustc_lint_diagnostics]
     pub fn is_lint(&mut self, name: String, has_future_breakage: bool) -> &mut Self {
         self.is_lint = Some(IsLint { name, has_future_breakage });
         self
@@ -1189,6 +1223,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
 
     with_fn! { with_code,
     /// Add an error code.
+    #[rustc_lint_diagnostics]
     pub fn code(&mut self, code: ErrCode) -> &mut Self {
         self.code = Some(code);
         self
@@ -1196,29 +1231,31 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
 
     with_fn! { with_primary_message,
     /// Add a primary message.
-    pub fn primary_message(&mut self, msg: impl Into<DiagnosticMessage>) -> &mut Self {
+    #[rustc_lint_diagnostics]
+    pub fn primary_message(&mut self, msg: impl Into<DiagMessage>) -> &mut Self {
         self.messages[0] = (msg.into(), Style::NoStyle);
         self
     } }
 
     with_fn! { with_arg,
     /// Add an argument.
+    #[rustc_lint_diagnostics]
     pub fn arg(
         &mut self,
-        name: impl Into<DiagnosticArgName>,
+        name: impl Into<DiagArgName>,
         arg: impl IntoDiagnosticArg,
     ) -> &mut Self {
         self.deref_mut().arg(name, arg);
         self
     } }
 
-    /// Helper function that takes a `SubdiagnosticMessage` and returns a `DiagnosticMessage` by
+    /// Helper function that takes a `SubdiagMessage` and returns a `DiagMessage` by
     /// combining it with the primary message of the diagnostic (if translatable, otherwise it just
     /// passes the user's string along).
     pub(crate) fn subdiagnostic_message_to_diagnostic_message(
         &self,
-        attr: impl Into<SubdiagnosticMessage>,
-    ) -> DiagnosticMessage {
+        attr: impl Into<SubdiagMessage>,
+    ) -> DiagMessage {
         self.deref().subdiagnostic_message_to_diagnostic_message(attr)
     }
 
@@ -1226,7 +1263,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     /// public methods above.
     ///
     /// Used by `proc_macro_server` for implementing `server::Diagnostic`.
-    pub fn sub(&mut self, level: Level, message: impl Into<SubdiagnosticMessage>, span: MultiSpan) {
+    pub fn sub(&mut self, level: Level, message: impl Into<SubdiagMessage>, span: MultiSpan) {
         self.deref_mut().sub(level, message, span);
     }
 
@@ -1237,14 +1274,14 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
             .into_iter()
             .map(|m| (self.subdiagnostic_message_to_diagnostic_message(m.content), m.style))
             .collect();
-        let sub = SubDiagnostic { level, messages, span };
+        let sub = Subdiag { level, messages, span };
         self.children.push(sub);
     }
 
-    /// Takes the diagnostic. For use by methods that consume the
-    /// DiagnosticBuilder: `emit`, `cancel`, etc. Afterwards, `drop` is the
-    /// only code that will be run on `self`.
-    fn take_diag(&mut self) -> Diagnostic {
+    /// Takes the diagnostic. For use by methods that consume the Diag: `emit`,
+    /// `cancel`, etc. Afterwards, `drop` is the only code that will be run on
+    /// `self`.
+    fn take_diag(&mut self) -> DiagInner {
         Box::into_inner(self.diag.take().unwrap())
     }
 
@@ -1263,7 +1300,7 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         // because delayed bugs have their level changed to `Bug` when they are
         // actually printed, so they produce an ICE.
         //
-        // (Also, even though `level` isn't `pub`, the whole `Diagnostic` could
+        // (Also, even though `level` isn't `pub`, the whole `DiagInner` could
         // be overwritten with a new one thanks to `DerefMut`. So this assert
         // protects against that, too.)
         assert!(
@@ -1301,11 +1338,9 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
         drop(self);
     }
 
-    /// Stashes diagnostic for possible later improvement in a different,
-    /// later stage of the compiler. The diagnostic can be accessed with
-    /// the provided `span` and `key` through [`DiagCtxt::steal_diagnostic()`].
-    pub fn stash(mut self, span: Span, key: StashKey) {
-        self.dcx.stash_diagnostic(span, key, self.take_diag());
+    /// See `DiagCtxt::stash_diagnostic` for details.
+    pub fn stash(mut self, span: Span, key: StashKey) -> Option<ErrorGuaranteed> {
+        self.dcx.stash_diagnostic(span, key, self.take_diag())
     }
 
     /// Delay emission of this diagnostic as a bug.
@@ -1325,15 +1360,15 @@ impl<'a, G: EmissionGuarantee> DiagnosticBuilder<'a, G> {
     }
 }
 
-/// Destructor bomb: every `DiagnosticBuilder` must be consumed (emitted,
-/// cancelled, etc.) or we emit a bug.
-impl<G: EmissionGuarantee> Drop for DiagnosticBuilder<'_, G> {
+/// Destructor bomb: every `Diag` must be consumed (emitted, cancelled, etc.)
+/// or we emit a bug.
+impl<G: EmissionGuarantee> Drop for Diag<'_, G> {
     fn drop(&mut self) {
         match self.diag.take() {
             Some(diag) if !panicking() => {
-                self.dcx.emit_diagnostic(Diagnostic::new(
+                self.dcx.emit_diagnostic(DiagInner::new(
                     Level::Bug,
-                    DiagnosticMessage::from("the following error was constructed but not emitted"),
+                    DiagMessage::from("the following error was constructed but not emitted"),
                 ));
                 self.dcx.emit_diagnostic(*diag);
                 panic!("error was constructed but not emitted");

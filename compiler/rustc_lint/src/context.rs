@@ -21,7 +21,7 @@ use crate::passes::{EarlyLintPassObject, LateLintPassObject};
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::sync;
 use rustc_data_structures::unord::UnordMap;
-use rustc_errors::{DecorateLint, DiagnosticBuilder, DiagnosticMessage, MultiSpan};
+use rustc_errors::{DecorateLint, Diag, DiagMessage, MultiSpan};
 use rustc_feature::Features;
 use rustc_hir as hir;
 use rustc_hir::def::Res;
@@ -31,7 +31,7 @@ use rustc_middle::middle::privacy::EffectiveVisibilities;
 use rustc_middle::ty::layout::{LayoutError, LayoutOfHelpers, TyAndLayout};
 use rustc_middle::ty::print::{with_no_trimmed_paths, PrintError};
 use rustc_middle::ty::{self, print::Printer, GenericArg, RegisteredTools, Ty, TyCtxt};
-use rustc_session::lint::{BuiltinLintDiagnostics, LintExpectationId};
+use rustc_session::lint::{BuiltinLintDiag, LintExpectationId};
 use rustc_session::lint::{FutureIncompatibleInfo, Level, Lint, LintBuffer, LintId};
 use rustc_session::{LintStoreMarker, Session};
 use rustc_span::edit_distance::find_best_match_for_names;
@@ -338,7 +338,7 @@ impl LintStore {
     }
 
     /// Checks the name of a lint for its existence, and whether it was
-    /// renamed or removed. Generates a DiagnosticBuilder containing a
+    /// renamed or removed. Generates a `Diag` containing a
     /// warning for renamed and removed lints. This is over both lint
     /// names from attributes and those passed on the command line. Since
     /// it emits non-fatal warnings and there are *two* lint passes that
@@ -536,9 +536,9 @@ pub trait LintContext {
         &self,
         lint: &'static Lint,
         span: Option<impl Into<MultiSpan>>,
-        msg: impl Into<DiagnosticMessage>,
-        decorate: impl for<'a, 'b> FnOnce(&'b mut DiagnosticBuilder<'a, ()>),
-        diagnostic: BuiltinLintDiagnostics,
+        msg: impl Into<DiagMessage>,
+        decorate: impl for<'a, 'b> FnOnce(&'b mut Diag<'a, ()>),
+        diagnostic: BuiltinLintDiag,
     ) {
         // We first generate a blank diagnostic.
         self.opt_span_lint(lint, span, msg, |db| {
@@ -559,8 +559,8 @@ pub trait LintContext {
         &self,
         lint: &'static Lint,
         span: Option<S>,
-        msg: impl Into<DiagnosticMessage>,
-        decorate: impl for<'a, 'b> FnOnce(&'b mut DiagnosticBuilder<'a, ()>),
+        msg: impl Into<DiagMessage>,
+        decorate: impl for<'a, 'b> FnOnce(&'b mut Diag<'a, ()>),
     );
 
     /// Emit a lint at `span` from a lint struct (some type that implements `DecorateLint`,
@@ -584,8 +584,8 @@ pub trait LintContext {
         &self,
         lint: &'static Lint,
         span: S,
-        msg: impl Into<DiagnosticMessage>,
-        decorate: impl for<'a, 'b> FnOnce(&'b mut DiagnosticBuilder<'a, ()>),
+        msg: impl Into<DiagMessage>,
+        decorate: impl for<'a, 'b> FnOnce(&'b mut Diag<'a, ()>),
     ) {
         self.opt_span_lint(lint, Some(span), msg, decorate);
     }
@@ -605,8 +605,8 @@ pub trait LintContext {
     fn lint(
         &self,
         lint: &'static Lint,
-        msg: impl Into<DiagnosticMessage>,
-        decorate: impl for<'a, 'b> FnOnce(&'b mut DiagnosticBuilder<'a, ()>),
+        msg: impl Into<DiagMessage>,
+        decorate: impl for<'a, 'b> FnOnce(&'b mut Diag<'a, ()>),
     ) {
         self.opt_span_lint(lint, None as Option<Span>, msg, decorate);
     }
@@ -621,12 +621,13 @@ pub trait LintContext {
     /// Note that this function should only be called for [`LintExpectationId`]s
     /// retrieved from the current lint pass. Buffered or manually created ids can
     /// cause ICEs.
-    #[rustc_lint_diagnostics]
     fn fulfill_expectation(&self, expectation: LintExpectationId) {
         // We need to make sure that submitted expectation ids are correctly fulfilled suppressed
         // and stored between compilation sessions. To not manually do these steps, we simply create
-        // a dummy diagnostic and emit is as usual, which will be suppressed and stored like a normal
-        // expected lint diagnostic.
+        // a dummy diagnostic and emit it as usual, which will be suppressed and stored like a
+        // normal expected lint diagnostic.
+        #[allow(rustc::diagnostic_outside_of_impl)]
+        #[allow(rustc::untranslatable_diagnostic)]
         self.sess()
             .dcx()
             .struct_expect(
@@ -670,8 +671,8 @@ impl<'tcx> LintContext for LateContext<'tcx> {
         &self,
         lint: &'static Lint,
         span: Option<S>,
-        msg: impl Into<DiagnosticMessage>,
-        decorate: impl for<'a, 'b> FnOnce(&'b mut DiagnosticBuilder<'a, ()>),
+        msg: impl Into<DiagMessage>,
+        decorate: impl for<'a, 'b> FnOnce(&'b mut Diag<'a, ()>),
     ) {
         let hir_id = self.last_node_with_lint_attrs;
 
@@ -697,8 +698,8 @@ impl LintContext for EarlyContext<'_> {
         &self,
         lint: &'static Lint,
         span: Option<S>,
-        msg: impl Into<DiagnosticMessage>,
-        decorate: impl for<'a, 'b> FnOnce(&'b mut DiagnosticBuilder<'a, ()>),
+        msg: impl Into<DiagMessage>,
+        decorate: impl for<'a, 'b> FnOnce(&'b mut Diag<'a, ()>),
     ) {
         self.builder.opt_span_lint(lint, span.map(|s| s.into()), msg, decorate)
     }

@@ -3,7 +3,7 @@ use std::num::NonZero;
 use rustc_ast::token;
 use rustc_ast::util::literal::LitError;
 use rustc_errors::{
-    codes::*, DiagCtxt, DiagnosticBuilder, DiagnosticMessage, ErrorGuaranteed, IntoDiagnostic,
+    codes::*, Diag, DiagCtxt, DiagMessage, EmissionGuarantee, ErrorGuaranteed, IntoDiagnostic,
     Level, MultiSpan,
 };
 use rustc_macros::Diagnostic;
@@ -14,13 +14,13 @@ use crate::parse::ParseSess;
 
 pub struct FeatureGateError {
     pub span: MultiSpan,
-    pub explain: DiagnosticMessage,
+    pub explain: DiagMessage,
 }
 
-impl<'a> IntoDiagnostic<'a> for FeatureGateError {
+impl<'a, G: EmissionGuarantee> IntoDiagnostic<'a, G> for FeatureGateError {
     #[track_caller]
-    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> DiagnosticBuilder<'a> {
-        DiagnosticBuilder::new(dcx, level, self.explain).with_span(self.span).with_code(E0658)
+    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> Diag<'a, G> {
+        Diag::new(dcx, level, self.explain).with_span(self.span).with_code(E0658)
     }
 }
 
@@ -346,7 +346,7 @@ pub(crate) struct BinaryFloatLiteralNotSupported {
 }
 
 pub fn report_lit_error(
-    sess: &ParseSess,
+    psess: &ParseSess,
     err: LitError,
     lit: token::Lit,
     span: Span,
@@ -378,7 +378,7 @@ pub fn report_lit_error(
         valid.then(|| format!("0{}{}", base_char.to_ascii_lowercase(), &suffix[1..]))
     }
 
-    let dcx = &sess.dcx;
+    let dcx = &psess.dcx;
     match err {
         LitError::InvalidSuffix(suffix) => {
             dcx.emit_err(InvalidLiteralSuffix { span, kind: lit.kind.descr(), suffix })

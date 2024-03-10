@@ -11,16 +11,16 @@ use profile::{memory_usage, Bytes};
 use rustc_hash::FxHashSet;
 use triomphe::Arc;
 
-use crate::{symbol_index::SymbolsDatabase, Change, RootDatabase};
+use crate::{symbol_index::SymbolsDatabase, ChangeWithProcMacros, RootDatabase};
 
 impl RootDatabase {
     pub fn request_cancellation(&mut self) {
         let _p =
             tracing::span!(tracing::Level::INFO, "RootDatabase::request_cancellation").entered();
-        self.salsa_runtime_mut().synthetic_write(Durability::LOW);
+        self.synthetic_write(Durability::LOW);
     }
 
-    pub fn apply_change(&mut self, change: Change) {
+    pub fn apply_change(&mut self, change: ChangeWithProcMacros) {
         let _p = tracing::span!(tracing::Level::INFO, "RootDatabase::apply_change").entered();
         self.request_cancellation();
         tracing::trace!("apply_change {:?}", change);
@@ -91,7 +91,6 @@ impl RootDatabase {
             crate::symbol_index::LocalRootsQuery
             crate::symbol_index::LibraryRootsQuery
             // HirDatabase
-            hir::db::InferQueryQuery
             hir::db::MirBodyQuery
             hir::db::BorrowckQuery
             hir::db::TyQuery
@@ -124,18 +123,16 @@ impl RootDatabase {
             hir::db::InternCoroutineQuery
             hir::db::AssociatedTyDataQuery
             hir::db::TraitDatumQuery
-            hir::db::StructDatumQuery
+            hir::db::AdtDatumQuery
             hir::db::ImplDatumQuery
             hir::db::FnDefDatumQuery
             hir::db::FnDefVarianceQuery
             hir::db::AdtVarianceQuery
             hir::db::AssociatedTyValueQuery
-            hir::db::TraitSolveQueryQuery
             hir::db::ProgramClausesForChalkEnvQuery
 
             // DefDatabase
             hir::db::FileItemTreeQuery
-            hir::db::CrateDefMapQueryQuery
             hir::db::BlockDefMapQuery
             hir::db::StructDataWithDiagnosticsQuery
             hir::db::UnionDataWithDiagnosticsQuery
@@ -165,7 +162,6 @@ impl RootDatabase {
             hir::db::FunctionVisibilityQuery
             hir::db::ConstVisibilityQuery
             hir::db::CrateSupportsNoStdQuery
-            hir::db::BlockItemTreeQueryQuery
             hir::db::ExternCrateDeclDataQuery
             hir::db::InternAnonymousConstQuery
             hir::db::InternExternCrateQuery

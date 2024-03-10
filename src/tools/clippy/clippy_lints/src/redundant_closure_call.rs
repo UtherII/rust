@@ -159,6 +159,15 @@ impl<'tcx> LateLintPass<'tcx> for RedundantClosureCall {
             //           ^^  we only want to lint for this call (but we walk up the calls to consider both calls).
             // without this check, we'd end up linting twice.
             && !matches!(recv.kind, hir::ExprKind::Call(..))
+            // Check if `recv` comes from a macro expansion. If it does, make sure that it's an expansion that is
+            // the same as the one the call is in.
+            // For instance, let's assume `x!()` returns a closure:
+            //    B ---v
+            //      x!()()
+            //          ^- A
+            // The call happens in the expansion `A`, while the closure originates from the expansion `B`.
+            // We don't want to suggest replacing `x!()()` with `x!()`.
+            && recv.span.ctxt().outer_expn() == expr.span.ctxt().outer_expn()
             && let (full_expr, call_depth) = get_parent_call_exprs(cx, expr)
             && let Some((body, fn_decl, coroutine_kind, params)) = find_innermost_closure(cx, recv, call_depth)
             // outside macros we lint properly. Inside macros, we lint only ||() style closures.
@@ -200,11 +209,11 @@ impl<'tcx> LateLintPass<'tcx> for RedundantClosureCall {
                             hint = hint.asyncify();
                         }
 
-                        let is_in_fn_call_arg =
-                            clippy_utils::get_parent_node(cx.tcx, expr.hir_id).is_some_and(|x| match x {
-                                Node::Expr(expr) => matches!(expr.kind, hir::ExprKind::Call(_, _)),
-                                _ => false,
-                            });
+                        let is_in_fn_call_arg = if let Node::Expr(expr) = cx.tcx.parent_hir_node(expr.hir_id) {
+                            matches!(expr.kind, hir::ExprKind::Call(_, _))
+                        } else {
+                            false
+                        };
 
                         // avoid clippy::double_parens
                         if !is_in_fn_call_arg {

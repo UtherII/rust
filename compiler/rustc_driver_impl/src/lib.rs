@@ -4,6 +4,7 @@
 //!
 //! This API is completely unstable and subject to change.
 
+#![allow(rustc::untranslatable_diagnostic)] // FIXME: make this translatable
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![doc(rust_logo)]
 #![feature(rustdoc_internals)]
@@ -21,6 +22,7 @@ use rustc_codegen_ssa::{traits::CodegenBackend, CodegenErrors, CodegenResults};
 use rustc_data_structures::profiling::{
     get_resident_set_size, print_time_passes_entry, TimePassesFormat,
 };
+use rustc_errors::emitter::stderr_destination;
 use rustc_errors::registry::Registry;
 use rustc_errors::{
     markdown, ColorConfig, DiagCtxt, ErrCode, ErrorGuaranteed, FatalError, PResult,
@@ -57,7 +59,7 @@ use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime, Time};
 
 #[allow(unused_macros)]
 macro do_not_use_print($($t:tt)*) {
@@ -143,16 +145,6 @@ pub const EXIT_FAILURE: i32 = 1;
 
 pub const DEFAULT_BUG_REPORT_URL: &str = "https://github.com/rust-lang/rust/issues/new\
     ?labels=C-bug%2C+I-ICE%2C+T-compiler&template=ice.md";
-
-pub fn abort_on_err<T>(result: Result<T, ErrorGuaranteed>, sess: &Session) -> T {
-    match result {
-        Err(..) => {
-            sess.dcx().abort_if_errors();
-            panic!("error reported but abort_if_errors didn't abort???");
-        }
-        Ok(x) => x,
-    }
-}
 
 pub trait Callbacks {
     /// Called before creating the compiler instance
@@ -300,7 +292,7 @@ fn run_compiler(
     // the compiler with @empty_file as argv[0] and no more arguments.
     let at_args = at_args.get(1..).unwrap_or_default();
 
-    let args = args::arg_expand_all(&default_early_dcx, at_args);
+    let args = args::arg_expand_all(&default_early_dcx, at_args)?;
 
     let Some(matches) = handle_options(&default_early_dcx, &args) else { return Ok(()) };
 
@@ -323,7 +315,7 @@ fn run_compiler(
         file_loader,
         locale_resources: DEFAULT_LOCALE_RESOURCES,
         lint_caps: Default::default(),
-        parse_sess_created: None,
+        psess_created: None,
         hash_untracked_state: None,
         register_lints: None,
         override_queries: None,
@@ -349,27 +341,33 @@ fn run_compiler(
         },
     };
 
-    callbacks.config(&mut config);
-
-    default_early_dcx.abort_if_errors();
     drop(default_early_dcx);
+
+    callbacks.config(&mut config);
 
     interface::run_compiler(config, |compiler| {
         let sess = &compiler.sess;
         let codegen_backend = &*compiler.codegen_backend;
+
+        // This is used for early exits unrelated to errors. E.g. when just
+        // printing some information without compiling, or exiting immediately
+        // after parsing, etc.
+        let early_exit = || {
+            if let Some(guar) = sess.dcx().has_errors() { Err(guar) } else { Ok(()) }
+        };
 
         // This implements `-Whelp`. It should be handled very early, like
         // `--help`/`-Zhelp`/`-Chelp`. This is the earliest it can run, because
         // it must happen after lints are registered, during session creation.
         if sess.opts.describe_lints {
             describe_lints(sess);
-            return sess.compile_status();
+            return early_exit();
         }
 
         let early_dcx = EarlyDiagCtxt::new(sess.opts.error_format);
 
         if print_crate_info(&early_dcx, codegen_backend, sess, has_input) == Compilation::Stop {
-            return sess.compile_status();
+            return early_exit();
         }
 
         if !has_input {
@@ -378,16 +376,16 @@ fn run_compiler(
 
         if !sess.opts.unstable_opts.ls.is_empty() {
             list_metadata(&early_dcx, sess, &*codegen_backend.metadata_loader());
-            return sess.compile_status();
+            return early_exit();
         }
 
         if sess.opts.unstable_opts.link_only {
             process_rlink(sess, compiler);
-            return sess.compile_status();
+            return early_exit();
         }
 
         let linker = compiler.enter(|queries| {
-            let early_exit = || sess.compile_status().map(|_| None);
+            let early_exit = || early_exit().map(|_| None);
             queries.parse()?;
 
             if let Some(ppm) = &sess.opts.pretty {
@@ -420,7 +418,7 @@ fn run_compiler(
             }
 
             // Make sure name resolution and macro expansion is run.
-            queries.global_ctxt()?.enter(|tcx| tcx.resolver_for_lowering(()));
+            queries.global_ctxt()?.enter(|tcx| tcx.resolver_for_lowering());
 
             if callbacks.after_expansion(compiler, queries) == Compilation::Stop {
                 return early_exit();
@@ -659,10 +657,11 @@ fn process_rlink(sess: &Session, compiler: &interface::Compiler) {
                 };
             }
         };
-        let result = compiler.codegen_backend.link(sess, codegen_results, &outputs);
-        abort_on_err(result, sess);
+        if compiler.codegen_backend.link(sess, codegen_results, &outputs).is_err() {
+            FatalError.raise();
+        }
     } else {
-        dcx.emit_fatal(RlinkNotAFile {})
+        dcx.emit_fatal(RlinkNotAFile {});
     }
 }
 
@@ -677,6 +676,7 @@ fn list_metadata(early_dcx: &EarlyDiagCtxt, sess: &Session, metadata_loader: &dy
                 metadata_loader,
                 &mut v,
                 &sess.opts.unstable_opts.ls,
+                sess.cfg_version,
             )
             .unwrap();
             safe_println!("{}", String::from_utf8(v).unwrap());
@@ -770,7 +770,7 @@ fn print_crate_info(
             }
             Cfg => {
                 let mut cfgs = sess
-                    .parse_sess
+                    .psess
                     .config
                     .iter()
                     .filter_map(|&(name, value)| {
@@ -1217,12 +1217,10 @@ pub fn handle_options(early_dcx: &EarlyDiagCtxt, args: &[String]) -> Option<geto
 
 fn parse_crate_attrs<'a>(sess: &'a Session) -> PResult<'a, ast::AttrVec> {
     match &sess.io.input {
-        Input::File(ifile) => rustc_parse::parse_crate_attrs_from_file(ifile, &sess.parse_sess),
-        Input::Str { name, input } => rustc_parse::parse_crate_attrs_from_source_str(
-            name.clone(),
-            input.clone(),
-            &sess.parse_sess,
-        ),
+        Input::File(ifile) => rustc_parse::parse_crate_attrs_from_file(ifile, &sess.psess),
+        Input::Str { name, input } => {
+            rustc_parse::parse_crate_attrs_from_source_str(name.clone(), input.clone(), &sess.psess)
+        }
     }
 }
 
@@ -1373,6 +1371,9 @@ pub fn install_ice_hook(
     using_internal_features
 }
 
+const DATE_FORMAT: &[time::format_description::FormatItem<'static>] =
+    &time::macros::format_description!("[year]-[month]-[day]");
+
 /// Prints the ICE message, including query stack, but without backtrace.
 ///
 /// The message will point the user at `bug_report_url` to report the ICE.
@@ -1387,11 +1388,11 @@ fn report_ice(
 ) {
     let fallback_bundle =
         rustc_errors::fallback_fluent_bundle(crate::DEFAULT_LOCALE_RESOURCES.to_vec(), false);
-    let emitter = Box::new(rustc_errors::emitter::HumanEmitter::stderr(
-        rustc_errors::ColorConfig::Auto,
+    let emitter = Box::new(rustc_errors::emitter::HumanEmitter::new(
+        stderr_destination(rustc_errors::ColorConfig::Auto),
         fallback_bundle,
     ));
-    let dcx = rustc_errors::DiagCtxt::with_emitter(emitter);
+    let dcx = rustc_errors::DiagCtxt::new(emitter);
 
     // a .span_bug or .bug call has already printed what
     // it wants to print.
@@ -1401,10 +1402,34 @@ fn report_ice(
         dcx.emit_err(session_diagnostics::Ice);
     }
 
-    if using_internal_features.load(std::sync::atomic::Ordering::Relaxed) {
-        dcx.emit_note(session_diagnostics::IceBugReportInternalFeature);
+    use time::ext::NumericalDuration;
+
+    // Try to hint user to update nightly if applicable when reporting an ICE.
+    // Attempt to calculate when current version was released, and add 12 hours
+    // as buffer. If the current version's release timestamp is older than
+    // the system's current time + 24 hours + 12 hours buffer if we're on
+    // nightly.
+    if let Some("nightly") = option_env!("CFG_RELEASE_CHANNEL")
+        && let Some(version) = option_env!("CFG_VERSION")
+        && let Some(ver_date_str) = option_env!("CFG_VER_DATE")
+        && let Ok(ver_date) = Date::parse(&ver_date_str, DATE_FORMAT)
+        && let ver_datetime = OffsetDateTime::new_utc(ver_date, Time::MIDNIGHT)
+        && let system_datetime = OffsetDateTime::from(SystemTime::now())
+        && system_datetime.checked_sub(36.hours()).is_some_and(|d| d > ver_datetime)
+        && !using_internal_features.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        dcx.emit_note(session_diagnostics::IceBugReportOutdated {
+            version,
+            bug_report_url,
+            note_update: (),
+            note_url: (),
+        });
     } else {
-        dcx.emit_note(session_diagnostics::IceBugReport { bug_report_url });
+        if using_internal_features.load(std::sync::atomic::Ordering::Relaxed) {
+            dcx.emit_note(session_diagnostics::IceBugReportInternalFeature);
+        } else {
+            dcx.emit_note(session_diagnostics::IceBugReport { bug_report_url });
+        }
     }
 
     let version = util::version_str!().unwrap_or("unknown_version");
@@ -1491,15 +1516,7 @@ pub fn main() -> ! {
     let mut callbacks = TimePassesCallbacks::default();
     let using_internal_features = install_ice_hook(DEFAULT_BUG_REPORT_URL, |_| ());
     let exit_code = catch_with_exit_code(|| {
-        let args = env::args_os()
-            .enumerate()
-            .map(|(i, arg)| {
-                arg.into_string().unwrap_or_else(|arg| {
-                    early_dcx.early_fatal(format!("argument {i} is not valid Unicode: {arg:?}"))
-                })
-            })
-            .collect::<Vec<_>>();
-        RunCompiler::new(&args, &mut callbacks)
+        RunCompiler::new(&args::raw_args(&early_dcx)?, &mut callbacks)
             .set_using_internal_features(using_internal_features)
             .run()
     });

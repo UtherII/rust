@@ -19,6 +19,8 @@ builtin_macros_asm_expected_other = expected operand, {$is_global_asm ->
 
 builtin_macros_asm_explicit_register_name = explicit register arguments cannot have names
 
+builtin_macros_asm_mayunwind = asm labels are not allowed with the `may_unwind` option
+
 builtin_macros_asm_modifier_invalid = asm template modifier must be a single character
 
 builtin_macros_asm_mutually_exclusive = the `{$opt1}` and `{$opt2}` options are mutually exclusive
@@ -220,12 +222,6 @@ builtin_macros_proc_macro = `proc-macro` crate types currently cannot export any
 builtin_macros_requires_cfg_pattern =
     macro requires a cfg-pattern as an argument
     .label = cfg-pattern required
-
-builtin_macros_should_panic = functions using `#[should_panic]` must return `()`
-
-builtin_macros_test_arg_non_lifetime = functions used as tests can not have any non-lifetime generic parameters
-
-builtin_macros_test_args = functions used as tests can not have any arguments
 
 builtin_macros_test_bad_fn = {$kind} functions cannot be used for tests
     .label = `{$kind}` because of this

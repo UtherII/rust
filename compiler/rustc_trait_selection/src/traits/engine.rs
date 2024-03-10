@@ -107,22 +107,13 @@ impl<'a, 'tcx> ObligationCtxt<'a, 'tcx> {
         self.register_infer_ok_obligations(infer_ok)
     }
 
-    /// Makes `expected <: actual`.
-    pub fn eq_exp<T>(
+    pub fn deeply_normalize<T: TypeFoldable<TyCtxt<'tcx>>>(
         &self,
         cause: &ObligationCause<'tcx>,
         param_env: ty::ParamEnv<'tcx>,
-        a_is_expected: bool,
-        a: T,
-        b: T,
-    ) -> Result<(), TypeError<'tcx>>
-    where
-        T: ToTrace<'tcx>,
-    {
-        self.infcx
-            .at(cause, param_env)
-            .eq_exp(DefineOpaqueTypes::Yes, a_is_expected, a, b)
-            .map(|infer_ok| self.register_infer_ok_obligations(infer_ok))
+        value: T,
+    ) -> Result<T, Vec<FulfillmentError<'tcx>>> {
+        self.infcx.at(cause, param_env).deeply_normalize(value, &mut **self.engine.borrow_mut())
     }
 
     pub fn eq<T: ToTrace<'tcx>>(

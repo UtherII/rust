@@ -304,7 +304,7 @@ use crate::ops::{Deref, DerefMut};
 use crate::slice;
 use crate::str;
 use crate::sys;
-use crate::sys_common::memchr;
+use core::slice::memchr;
 
 #[stable(feature = "bufwriter_into_parts", since = "1.56.0")]
 pub use self::buffered::WriterPanicked;
@@ -465,7 +465,7 @@ pub(crate) fn default_read_to_end<R: Read + ?Sized>(
 
         if buf.len() == buf.capacity() {
             // buf is full, need more space
-            buf.try_reserve(PROBE_SIZE).map_err(|_| ErrorKind::OutOfMemory)?;
+            buf.try_reserve(PROBE_SIZE)?;
         }
 
         let mut spare = buf.spare_capacity_mut();
@@ -834,7 +834,7 @@ pub trait Read {
     ///         if src_buf.is_empty() {
     ///             break;
     ///         }
-    ///         dest_vec.try_reserve(src_buf.len()).map_err(|_| io::ErrorKind::OutOfMemory)?;
+    ///         dest_vec.try_reserve(src_buf.len())?;
     ///         dest_vec.extend_from_slice(src_buf);
     ///
     ///         // Any irreversible side effects should happen after `try_reserve` succeeds,

@@ -1,33 +1,37 @@
-pub use self::at::DefineOpaqueTypes;
-pub use self::freshen::TypeFreshener;
-pub use self::lexical_region_resolve::RegionResolutionError;
-pub use self::BoundRegionConversionTime::*;
-pub use self::RegionVariableOrigin::*;
-pub use self::SubregionOrigin::*;
-pub use self::ValuePairs::*;
+pub use at::DefineOpaqueTypes;
+pub use freshen::TypeFreshener;
+pub use lexical_region_resolve::RegionResolutionError;
+pub use relate::combine::CombineFields;
 pub use relate::combine::ObligationEmittingRelation;
-use rustc_data_structures::captures::Captures;
-use rustc_data_structures::undo_log::UndoLogs;
-use rustc_middle::infer::unify_key::EffectVarValue;
-use rustc_middle::infer::unify_key::{ConstVidKey, EffectVidKey};
-
-use self::opaque_types::OpaqueTypeStorage;
-pub(crate) use self::undo_log::{InferCtxtUndoLogs, Snapshot, UndoLog};
+pub use relate::StructurallyRelateAliases;
+pub use rustc_middle::ty::IntVarValue;
+pub use BoundRegionConversionTime::*;
+pub use RegionVariableOrigin::*;
+pub use SubregionOrigin::*;
+pub use ValuePairs::*;
 
 use crate::traits::{
     self, ObligationCause, ObligationInspector, PredicateObligations, TraitEngine, TraitEngineExt,
 };
-
+use error_reporting::TypeErrCtxt;
+use free_regions::RegionRelations;
+use lexical_region_resolve::LexicalRegionResolutions;
+use opaque_types::OpaqueTypeStorage;
+use region_constraints::{GenericKind, VarInfos, VerifyBound};
+use region_constraints::{RegionConstraintCollector, RegionConstraintStorage};
+use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::undo_log::Rollback;
 use rustc_data_structures::unify as ut;
-use rustc_errors::{DiagCtxt, DiagnosticBuilder, ErrorGuaranteed};
+use rustc_errors::{Diag, DiagCtxt, ErrorGuaranteed};
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::infer::canonical::{Canonical, CanonicalVarValues};
 use rustc_middle::infer::unify_key::ConstVariableValue;
+use rustc_middle::infer::unify_key::EffectVarValue;
 use rustc_middle::infer::unify_key::{ConstVariableOrigin, ConstVariableOriginKind, ToType};
+use rustc_middle::infer::unify_key::{ConstVidKey, EffectVidKey};
 use rustc_middle::mir::interpret::{ErrorHandled, EvalToValTreeResult};
 use rustc_middle::mir::ConstraintCategory;
 use rustc_middle::traits::{select, DefiningAnchor};
@@ -36,33 +40,21 @@ use rustc_middle::ty::fold::BoundVarReplacerDelegate;
 use rustc_middle::ty::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable};
 use rustc_middle::ty::relate::RelateResult;
 use rustc_middle::ty::visit::TypeVisitableExt;
-pub use rustc_middle::ty::IntVarValue;
 use rustc_middle::ty::{self, GenericParamDefKind, InferConst, InferTy, Ty, TyCtxt};
 use rustc_middle::ty::{ConstVid, EffectVid, FloatVid, IntVid, TyVid};
 use rustc_middle::ty::{GenericArg, GenericArgKind, GenericArgs, GenericArgsRef};
 use rustc_span::symbol::Symbol;
 use rustc_span::Span;
-
+use snapshot::undo_log::InferCtxtUndoLogs;
 use std::cell::{Cell, RefCell};
 use std::fmt;
-
-use self::error_reporting::TypeErrCtxt;
-use self::free_regions::RegionRelations;
-use self::lexical_region_resolve::LexicalRegionResolutions;
-use self::region_constraints::{GenericKind, VarInfos, VerifyBound};
-use self::region_constraints::{
-    RegionConstraintCollector, RegionConstraintStorage, RegionSnapshot,
-};
-pub use self::relate::combine::CombineFields;
-pub use self::relate::nll as nll_relate;
-use self::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
+use type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 
 pub mod at;
 pub mod canonical;
 pub mod error_reporting;
 pub mod free_regions;
 mod freshen;
-mod fudge;
 mod lexical_region_resolve;
 pub mod opaque_types;
 pub mod outlives;
@@ -70,8 +62,8 @@ mod projection;
 pub mod region_constraints;
 mod relate;
 pub mod resolve;
+pub(crate) mod snapshot;
 pub mod type_variable;
-mod undo_log;
 
 #[must_use]
 #[derive(Debug)]
@@ -306,12 +298,6 @@ pub struct InferCtxt<'tcx> {
     // FIXME(matthewjasper) Merge into `tainted_by_errors`
     err_count_on_creation: usize,
 
-    /// Track how many errors were stashed when this infcx is created.
-    /// Used for the same purpose as `err_count_on_creation`, even
-    /// though it's weaker because the count can go up and down.
-    // FIXME(matthewjasper) Merge into `tainted_by_errors`
-    stashed_err_count_on_creation: usize,
-
     /// What is the innermost universe we have created? Starts out as
     /// `UniverseIndex::root()` but grows from there as we enter
     /// universal quantifiers.
@@ -375,7 +361,10 @@ impl<'tcx> ty::InferCtxtLike for InferCtxt<'tcx> {
     }
 
     fn universe_of_lt(&self, lt: ty::RegionVid) -> Option<ty::UniverseIndex> {
-        Some(self.universe_of_region_vid(lt))
+        match self.inner.borrow_mut().unwrap_region_constraints().probe_value(lt) {
+            Err(universe) => Some(universe),
+            Ok(_) => None,
+        }
     }
 
     fn root_ty_var(&self, vid: TyVid) -> TyVid {
@@ -713,8 +702,7 @@ impl<'tcx> InferCtxtBuilder<'tcx> {
             reported_trait_errors: Default::default(),
             reported_signature_mismatch: Default::default(),
             tainted_by_errors: Cell::new(None),
-            err_count_on_creation: tcx.dcx().err_count(),
-            stashed_err_count_on_creation: tcx.dcx().stashed_err_count(),
+            err_count_on_creation: tcx.dcx().err_count_excluding_lint_errs(),
             universe: Cell::new(ty::UniverseIndex::ROOT),
             intercrate,
             next_trait_solver,
@@ -742,13 +730,6 @@ impl<'tcx> InferOk<'tcx, ()> {
     }
 }
 
-#[must_use = "once you start a snapshot, you should always consume it"]
-pub struct CombinedSnapshot<'tcx> {
-    undo_snapshot: Snapshot<'tcx>,
-    region_constraints_snapshot: RegionSnapshot,
-    universe: ty::UniverseIndex,
-}
-
 impl<'tcx> InferCtxt<'tcx> {
     pub fn dcx(&self) -> &'tcx DiagCtxt {
         self.tcx.dcx()
@@ -763,6 +744,7 @@ impl<'tcx> InferCtxt<'tcx> {
     pub fn err_ctxt(&self) -> TypeErrCtxt<'_, 'tcx> {
         TypeErrCtxt {
             infcx: self,
+            sub_relations: Default::default(),
             typeck_results: None,
             fallback_has_occurred: false,
             normalize_fn_sig: Box::new(|fn_sig| fn_sig),
@@ -839,95 +821,10 @@ impl<'tcx> InferCtxt<'tcx> {
         CombineFields {
             infcx: self,
             trace,
-            cause: None,
             param_env,
             obligations: PredicateObligations::new(),
             define_opaque_types,
         }
-    }
-
-    pub fn in_snapshot(&self) -> bool {
-        UndoLogs::<UndoLog<'tcx>>::in_snapshot(&self.inner.borrow_mut().undo_log)
-    }
-
-    pub fn num_open_snapshots(&self) -> usize {
-        UndoLogs::<UndoLog<'tcx>>::num_open_snapshots(&self.inner.borrow_mut().undo_log)
-    }
-
-    fn start_snapshot(&self) -> CombinedSnapshot<'tcx> {
-        debug!("start_snapshot()");
-
-        let mut inner = self.inner.borrow_mut();
-
-        CombinedSnapshot {
-            undo_snapshot: inner.undo_log.start_snapshot(),
-            region_constraints_snapshot: inner.unwrap_region_constraints().start_snapshot(),
-            universe: self.universe(),
-        }
-    }
-
-    #[instrument(skip(self, snapshot), level = "debug")]
-    fn rollback_to(&self, snapshot: CombinedSnapshot<'tcx>) {
-        let CombinedSnapshot { undo_snapshot, region_constraints_snapshot, universe } = snapshot;
-
-        self.universe.set(universe);
-
-        let mut inner = self.inner.borrow_mut();
-        inner.rollback_to(undo_snapshot);
-        inner.unwrap_region_constraints().rollback_to(region_constraints_snapshot);
-    }
-
-    #[instrument(skip(self, snapshot), level = "debug")]
-    fn commit_from(&self, snapshot: CombinedSnapshot<'tcx>) {
-        let CombinedSnapshot { undo_snapshot, region_constraints_snapshot: _, universe: _ } =
-            snapshot;
-
-        self.inner.borrow_mut().commit(undo_snapshot);
-    }
-
-    /// Execute `f` and commit the bindings if closure `f` returns `Ok(_)`.
-    #[instrument(skip(self, f), level = "debug")]
-    pub fn commit_if_ok<T, E, F>(&self, f: F) -> Result<T, E>
-    where
-        F: FnOnce(&CombinedSnapshot<'tcx>) -> Result<T, E>,
-    {
-        let snapshot = self.start_snapshot();
-        let r = f(&snapshot);
-        debug!("commit_if_ok() -- r.is_ok() = {}", r.is_ok());
-        match r {
-            Ok(_) => {
-                self.commit_from(snapshot);
-            }
-            Err(_) => {
-                self.rollback_to(snapshot);
-            }
-        }
-        r
-    }
-
-    /// Execute `f` then unroll any bindings it creates.
-    #[instrument(skip(self, f), level = "debug")]
-    pub fn probe<R, F>(&self, f: F) -> R
-    where
-        F: FnOnce(&CombinedSnapshot<'tcx>) -> R,
-    {
-        let snapshot = self.start_snapshot();
-        let r = f(&snapshot);
-        self.rollback_to(snapshot);
-        r
-    }
-
-    /// Scan the constraints produced since `snapshot` and check whether
-    /// we added any region constraints.
-    pub fn region_constraints_added_in_snapshot(&self, snapshot: &CombinedSnapshot<'tcx>) -> bool {
-        self.inner
-            .borrow_mut()
-            .unwrap_region_constraints()
-            .region_constraints_added_in_snapshot(&snapshot.undo_snapshot)
-    }
-
-    pub fn opaque_types_added_in_snapshot(&self, snapshot: &CombinedSnapshot<'tcx>) -> bool {
-        self.inner.borrow().undo_log.opaque_types_in_snapshot(&snapshot.undo_snapshot)
     }
 
     pub fn can_sub<T>(&self, param_env: ty::ParamEnv<'tcx>, expected: T, actual: T) -> bool
@@ -1030,14 +927,17 @@ impl<'tcx> InferCtxt<'tcx> {
         let r_b = self.shallow_resolve(predicate.skip_binder().b);
         match (r_a.kind(), r_b.kind()) {
             (&ty::Infer(ty::TyVar(a_vid)), &ty::Infer(ty::TyVar(b_vid))) => {
-                self.inner.borrow_mut().type_variables().sub(a_vid, b_vid);
                 return Err((a_vid, b_vid));
             }
             _ => {}
         }
 
         self.enter_forall(predicate, |ty::SubtypePredicate { a_is_expected, a, b }| {
-            Ok(self.at(cause, param_env).sub_exp(DefineOpaqueTypes::No, a_is_expected, a, b))
+            if a_is_expected {
+                Ok(self.at(cause, param_env).sub(DefineOpaqueTypes::No, a, b))
+            } else {
+                Ok(self.at(cause, param_env).sup(DefineOpaqueTypes::No, b, a))
+            }
         })
     }
 
@@ -1156,11 +1056,6 @@ impl<'tcx> InferCtxt<'tcx> {
         self.inner.borrow_mut().unwrap_region_constraints().universe(r)
     }
 
-    /// Return the universe that the region variable `r` was created in.
-    pub fn universe_of_region_vid(&self, vid: ty::RegionVid) -> ty::UniverseIndex {
-        self.inner.borrow_mut().unwrap_region_constraints().var_universe(vid)
-    }
-
     /// Number of region variables created so far.
     pub fn num_region_vars(&self) -> usize {
         self.inner.borrow_mut().unwrap_region_constraints().num_region_vars()
@@ -1268,17 +1163,12 @@ impl<'tcx> InferCtxt<'tcx> {
     pub fn tainted_by_errors(&self) -> Option<ErrorGuaranteed> {
         if let Some(guar) = self.tainted_by_errors.get() {
             Some(guar)
-        } else if self.dcx().err_count() > self.err_count_on_creation {
-            // Errors reported since this infcx was made.
+        } else if self.dcx().err_count_excluding_lint_errs() > self.err_count_on_creation {
+            // Errors reported since this infcx was made. Lint errors are
+            // excluded to avoid some being swallowed in the presence of
+            // non-lint errors. (It's arguable whether or not this exclusion is
+            // important.)
             let guar = self.dcx().has_errors().unwrap();
-            self.set_tainted_by_errors(guar);
-            Some(guar)
-        } else if self.dcx().stashed_err_count() > self.stashed_err_count_on_creation {
-            // Errors stashed since this infcx was made. Not entirely reliable
-            // because the count of stashed errors can go down. But without
-            // this case we get a moderate number of uninteresting and
-            // extraneous "type annotations needed" errors.
-            let guar = self.dcx().delayed_bug("tainted_by_errors: stashed bug awaiting emission");
             self.set_tainted_by_errors(guar);
             Some(guar)
         } else {
@@ -1766,9 +1656,9 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         sp: Span,
         mk_diag: M,
         actual_ty: Ty<'tcx>,
-    ) -> DiagnosticBuilder<'tcx>
+    ) -> Diag<'tcx>
     where
-        M: FnOnce(String) -> DiagnosticBuilder<'tcx>,
+        M: FnOnce(String) -> Diag<'tcx>,
     {
         let actual_ty = self.resolve_vars_if_possible(actual_ty);
         debug!("type_error_struct_with_diag({:?}, {:?})", sp, actual_ty);
@@ -1789,7 +1679,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         expected: Ty<'tcx>,
         actual: Ty<'tcx>,
         err: TypeError<'tcx>,
-    ) -> DiagnosticBuilder<'tcx> {
+    ) -> Diag<'tcx> {
         self.report_and_explain_type_error(TypeTrace::types(cause, true, expected, actual), err)
     }
 
@@ -1799,7 +1689,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         expected: ty::Const<'tcx>,
         actual: ty::Const<'tcx>,
         err: TypeError<'tcx>,
-    ) -> DiagnosticBuilder<'tcx> {
+    ) -> Diag<'tcx> {
         self.report_and_explain_type_error(TypeTrace::consts(cause, true, expected, actual), err)
     }
 }

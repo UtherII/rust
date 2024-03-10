@@ -793,9 +793,10 @@ pub enum TerminatorKind<'tcx> {
         /// used to map assembler errors back to the line in the source code.
         line_spans: &'tcx [Span],
 
-        /// Destination block after the inline assembly returns, unless it is
-        /// diverging (InlineAsmOptions::NORETURN).
-        destination: Option<BasicBlock>,
+        /// Valid targets for the inline assembly.
+        /// The first element is the fallthrough destination, unless
+        /// InlineAsmOptions::NORETURN is set.
+        targets: Vec<BasicBlock>,
 
         /// Action to be taken if the inline assembly unwinds. This is present
         /// if and only if InlineAsmOptions::MAY_UNWIND is set.
@@ -917,6 +918,10 @@ pub enum InlineAsmOperand<'tcx> {
     },
     SymStatic {
         def_id: DefId,
+    },
+    Label {
+        /// This represents the index into the `targets` array in `TerminatorKind::InlineAsm`.
+        target_index: usize,
     },
 }
 
@@ -1361,8 +1366,16 @@ pub enum NullOp<'tcx> {
     AlignOf,
     /// Returns the offset of a field
     OffsetOf(&'tcx List<(VariantIdx, FieldIdx)>),
-    /// cfg!(debug_assertions), but expanded in codegen
-    DebugAssertions,
+    /// Returns whether we want to check for library UB or language UB at monomorphization time.
+    /// Both kinds of UB evaluate to `true` in codegen, and only library UB evalutes to `true` in
+    /// const-eval/Miri, because the interpreter has its own better checks for language UB.
+    UbCheck(UbKind),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TyEncodable, TyDecodable, Hash, HashStable)]
+pub enum UbKind {
+    LanguageUb,
+    LibraryUb,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

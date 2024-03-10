@@ -15,6 +15,7 @@ pub mod helpers;
 pub mod items_locator;
 pub mod label;
 pub mod path_transform;
+pub mod prime_caches;
 pub mod rename;
 pub mod rust_doc;
 pub mod search;
@@ -43,7 +44,7 @@ pub mod syntax_helpers {
     pub use parser::LexedStr;
 }
 
-pub use hir::Change;
+pub use hir::ChangeWithProcMacros;
 
 use std::{fmt, mem::ManuallyDrop};
 
@@ -215,7 +216,6 @@ impl RootDatabase {
 
             // DefDatabase
             hir_db::FileItemTreeQuery
-            hir_db::CrateDefMapQueryQuery
             hir_db::BlockDefMapQuery
             hir_db::StructDataWithDiagnosticsQuery
             hir_db::UnionDataWithDiagnosticsQuery
@@ -247,7 +247,6 @@ impl RootDatabase {
             hir_db::CrateSupportsNoStdQuery
 
             // HirDatabase
-            hir_db::InferQueryQuery
             hir_db::MirBodyQuery
             hir_db::BorrowckQuery
             hir_db::TyQuery
@@ -280,13 +279,12 @@ impl RootDatabase {
             // hir_db::InternCoroutineQuery
             hir_db::AssociatedTyDataQuery
             hir_db::TraitDatumQuery
-            hir_db::StructDatumQuery
+            hir_db::AdtDatumQuery
             hir_db::ImplDatumQuery
             hir_db::FnDefDatumQuery
             hir_db::FnDefVarianceQuery
             hir_db::AdtVarianceQuery
             hir_db::AssociatedTyValueQuery
-            hir_db::TraitSolveQueryQuery
             hir_db::ProgramClausesForChalkEnvQuery
 
             // SymbolsDatabase
@@ -410,10 +408,4 @@ impl SnippetCap {
             None
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    mod line_index;
-    mod sourcegen_lints;
 }

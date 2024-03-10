@@ -9,7 +9,7 @@ use rustc_ast::mut_visit::{self, MutVisitor};
 use rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_errors::DiagnosticBuilder;
+use rustc_errors::Diag;
 use rustc_errors::{pluralize, PResult};
 use rustc_span::hygiene::{LocalExpnId, Transparency};
 use rustc_span::symbol::{sym, Ident, MacroRulesNormalizedIdent};
@@ -555,23 +555,14 @@ fn count_repetitions<'a>(
 ) -> PResult<'a, usize> {
     // Recursively count the number of matches in `matched` at given depth
     // (or at the top-level of `matched` if no depth is given).
-    fn count<'a>(
-        cx: &ExtCtxt<'a>,
-        depth_curr: usize,
-        depth_max: usize,
-        matched: &NamedMatch,
-        sp: &DelimSpan,
-    ) -> PResult<'a, usize> {
+    fn count<'a>(depth_curr: usize, depth_max: usize, matched: &NamedMatch) -> PResult<'a, usize> {
         match matched {
             MatchedTokenTree(_) | MatchedNonterminal(_) => Ok(1),
             MatchedSeq(named_matches) => {
                 if depth_curr == depth_max {
                     Ok(named_matches.len())
                 } else {
-                    named_matches
-                        .iter()
-                        .map(|elem| count(cx, depth_curr + 1, depth_max, elem, sp))
-                        .sum()
+                    named_matches.iter().map(|elem| count(depth_curr + 1, depth_max, elem)).sum()
                 }
             }
         }
@@ -612,7 +603,7 @@ fn count_repetitions<'a>(
         return Err(cx.dcx().create_err(CountRepetitionMisplaced { span: sp.entire() }));
     }
 
-    count(cx, depth_user, depth_max, matched, sp)
+    count(depth_user, depth_max, matched)
 }
 
 /// Returns a `NamedMatch` item declared on the LHS given an arbitrary [Ident]
@@ -631,12 +622,7 @@ where
 
 /// Used by meta-variable expressions when an user input is out of the actual declared bounds. For
 /// example, index(999999) in an repetition of only three elements.
-fn out_of_bounds_err<'a>(
-    cx: &ExtCtxt<'a>,
-    max: usize,
-    span: Span,
-    ty: &str,
-) -> DiagnosticBuilder<'a> {
+fn out_of_bounds_err<'a>(cx: &ExtCtxt<'a>, max: usize, span: Span, ty: &str) -> Diag<'a> {
     let msg = if max == 0 {
         format!(
             "meta-variable expression `{ty}` with depth parameter \

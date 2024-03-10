@@ -2,7 +2,7 @@ use crate::errors;
 use crate::mbe::macro_parser::count_metavar_decls;
 use crate::mbe::{Delimited, KleeneOp, KleeneToken, MetaVarExpr, SequenceRepetition, TokenTree};
 
-use rustc_ast::token::{self, Delimiter, Token};
+use rustc_ast::token::{self, Delimiter, IdentIsRaw, Token};
 use rustc_ast::{tokenstream, NodeId};
 use rustc_ast_pretty::pprust;
 use rustc_feature::Features;
@@ -175,8 +175,7 @@ fn parse_tree<'a>(
                                 // The delimiter is `{`. This indicates the beginning
                                 // of a meta-variable expression (e.g. `${count(ident)}`).
                                 // Try to parse the meta-variable expression.
-                                match MetaVarExpr::parse(tts, delim_span.entire(), &sess.parse_sess)
-                                {
+                                match MetaVarExpr::parse(tts, delim_span.entire(), &sess.psess) {
                                     Err(err) => {
                                         err.emit();
                                         // Returns early the same read `$` to avoid spanning
@@ -222,7 +221,7 @@ fn parse_tree<'a>(
                 Some(tokenstream::TokenTree::Token(token, _)) if token.is_ident() => {
                     let (ident, is_raw) = token.ident().unwrap();
                     let span = ident.span.with_lo(span.lo());
-                    if ident.name == kw::Crate && !is_raw {
+                    if ident.name == kw::Crate && matches!(is_raw, IdentIsRaw::No) {
                         TokenTree::token(token::Ident(kw::DollarCrate, is_raw), span)
                     } else {
                         TokenTree::MetaVar(span, ident)

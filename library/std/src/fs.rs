@@ -248,10 +248,10 @@ pub struct DirBuilder {
 ///
 /// ```no_run
 /// use std::fs;
-/// use std::net::SocketAddr;
 ///
 /// fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
-///     let foo: SocketAddr = String::from_utf8_lossy(&fs::read("address.txt")?).parse()?;
+///     let data: Vec<u8> = fs::read("image.jpg")?;
+///     assert_eq!(data[0..3], [0xFF, 0xD8, 0xFF]);
 ///     Ok(())
 /// }
 /// ```
@@ -261,7 +261,7 @@ pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
         let mut file = File::open(path)?;
         let size = file.metadata().map(|m| m.len() as usize).ok();
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(size.unwrap_or(0)).map_err(|_| io::ErrorKind::OutOfMemory)?;
+        bytes.try_reserve_exact(size.unwrap_or(0))?;
         io::default_read_to_end(&mut file, &mut bytes, size)?;
         Ok(bytes)
     }
@@ -290,11 +290,11 @@ pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
 ///
 /// ```no_run
 /// use std::fs;
-/// use std::net::SocketAddr;
 /// use std::error::Error;
 ///
 /// fn main() -> Result<(), Box<dyn Error>> {
-///     let foo: SocketAddr = fs::read_to_string("address.txt")?.parse()?;
+///     let message: String = fs::read_to_string("message.txt")?;
+///     println!("{}", message);
 ///     Ok(())
 /// }
 /// ```
@@ -304,7 +304,7 @@ pub fn read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
         let mut file = File::open(path)?;
         let size = file.metadata().map(|m| m.len() as usize).ok();
         let mut string = String::new();
-        string.try_reserve_exact(size.unwrap_or(0)).map_err(|_| io::ErrorKind::OutOfMemory)?;
+        string.try_reserve_exact(size.unwrap_or(0))?;
         io::default_read_to_string(&mut file, &mut string, size)?;
         Ok(string)
     }
@@ -777,14 +777,14 @@ impl Read for &File {
     // Reserves space in the buffer based on the file size when available.
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         let size = buffer_capacity_required(self);
-        buf.try_reserve(size.unwrap_or(0)).map_err(|_| io::ErrorKind::OutOfMemory)?;
+        buf.try_reserve(size.unwrap_or(0))?;
         io::default_read_to_end(self, buf, size)
     }
 
     // Reserves space in the buffer based on the file size when available.
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         let size = buffer_capacity_required(self);
-        buf.try_reserve(size.unwrap_or(0)).map_err(|_| io::ErrorKind::OutOfMemory)?;
+        buf.try_reserve(size.unwrap_or(0))?;
         io::default_read_to_string(self, buf, size)
     }
 }
@@ -1476,11 +1476,10 @@ impl Permissions {
     /// On Unix-based platforms this checks if *any* of the owner, group or others
     /// write permission bits are set. It does not check if the current
     /// user is in the file's assigned group. It also does not check ACLs.
-    /// Therefore even if this returns true you may not be able to write to the
-    /// file, and vice versa. The [`PermissionsExt`] trait gives direct access
-    /// to the permission bits but also does not read ACLs. If you need to
-    /// accurately know whether or not a file is writable use the `access()`
-    /// function from libc.
+    /// Therefore the return value of this function cannot be relied upon
+    /// to predict whether attempts to read or write the file will actually succeed.
+    /// The [`PermissionsExt`] trait gives direct access to the permission bits but
+    /// also does not read ACLs.
     ///
     /// [`PermissionsExt`]: crate::os::unix::fs::PermissionsExt
     ///

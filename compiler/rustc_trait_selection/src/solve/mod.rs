@@ -42,6 +42,17 @@ pub use fulfill::FulfillmentCtxt;
 pub(crate) use normalize::deeply_normalize_for_diagnostics;
 pub use normalize::{deeply_normalize, deeply_normalize_with_skipped_universes};
 
+/// How many fixpoint iterations we should attempt inside of the solver before bailing
+/// with overflow.
+///
+/// We previously used  `tcx.recursion_limit().0.checked_ilog2().unwrap_or(0)` for this.
+/// However, it feels unlikely that uncreasing the recursion limit by a power of two
+/// to get one more itereation is every useful or desirable. We now instead used a constant
+/// here. If there ever ends up some use-cases where a bigger number of fixpoint iterations
+/// is required, we can add a new attribute for that or revert this to be dependant on the
+/// recursion limit again. However, this feels very unlikely.
+const FIXPOINT_STEP_LIMIT: usize = 8;
+
 #[derive(Debug, Clone, Copy)]
 enum SolverMode {
     /// Ordinary trait solving, using everywhere except for coherence.
@@ -267,6 +278,7 @@ impl<'tcx> EvalCtxt<'_, 'tcx> {
     /// This function is necessary in nearly all cases before matching on a type.
     /// Not doing so is likely to be incomplete and therefore unsound during
     /// coherence.
+    #[instrument(level = "debug", skip(self, param_env), ret)]
     fn structurally_normalize_ty(
         &mut self,
         param_env: ty::ParamEnv<'tcx>,

@@ -52,19 +52,18 @@ impl CoverageGraph {
             }
         }
 
-        let mut basic_coverage_blocks =
-            Self { bcbs, bb_to_bcb, successors, predecessors, dominators: None };
-        let dominators = dominators::dominators(&basic_coverage_blocks);
-        basic_coverage_blocks.dominators = Some(dominators);
+        let mut this = Self { bcbs, bb_to_bcb, successors, predecessors, dominators: None };
+
+        this.dominators = Some(dominators::dominators(&this));
 
         // The coverage graph's entry-point node (bcb0) always starts with bb0,
         // which never has predecessors. Any other blocks merged into bcb0 can't
         // have multiple (coverage-relevant) predecessors, so bcb0 always has
         // zero in-edges.
-        assert!(basic_coverage_blocks[START_BCB].leader_bb() == mir::START_BLOCK);
-        assert!(basic_coverage_blocks.predecessors[START_BCB].is_empty());
+        assert!(this[START_BCB].leader_bb() == mir::START_BLOCK);
+        assert!(this.predecessors[START_BCB].is_empty());
 
-        basic_coverage_blocks
+        this
     }
 
     fn compute_basic_coverage_blocks(
@@ -350,12 +349,20 @@ fn bcb_filtered_successors<'a, 'tcx>(terminator: &'a Terminator<'tcx>) -> Covera
         | FalseUnwind { real_target: target, .. }
         | Goto { target } => CoverageSuccessors::Chainable(target),
 
-        // These terminators can normally be chained, except when they have no
+        // A call terminator can normally be chained, except when they have no
         // successor because they are known to diverge.
-        Call { target: maybe_target, .. } | InlineAsm { destination: maybe_target, .. } => {
-            match maybe_target {
-                Some(target) => CoverageSuccessors::Chainable(target),
-                None => CoverageSuccessors::NotChainable(&[]),
+        Call { target: maybe_target, .. } => match maybe_target {
+            Some(target) => CoverageSuccessors::Chainable(target),
+            None => CoverageSuccessors::NotChainable(&[]),
+        },
+
+        // An inline asm terminator can normally be chained, except when it diverges or uses asm
+        // goto.
+        InlineAsm { ref targets, .. } => {
+            if targets.len() == 1 {
+                CoverageSuccessors::Chainable(targets[0])
+            } else {
+                CoverageSuccessors::NotChainable(targets)
             }
         }
 

@@ -30,8 +30,11 @@ pub use adt::*;
 pub use assoc::*;
 pub use generic_args::*;
 pub use generics::*;
+pub use intrinsic::IntrinsicDef;
 use rustc_ast as ast;
+use rustc_ast::expand::StrippedCfgItem;
 use rustc_ast::node_id::NodeMap;
+pub use rustc_ast_ir::{try_visit, Movability, Mutability};
 use rustc_attr as attr;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap, FxIndexSet};
 use rustc_data_structures::intern::Interned;
@@ -39,7 +42,7 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::steal::Steal;
 use rustc_data_structures::tagged_ptr::CopyTaggedPtr;
 use rustc_data_structures::unord::UnordMap;
-use rustc_errors::{DiagnosticBuilder, ErrorGuaranteed, StashKey};
+use rustc_errors::{Diag, ErrorGuaranteed, StashKey};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, CtorOf, DefKind, DocLinkResMap, LifetimeRes, Res};
 use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId, LocalDefIdMap, LocalDefIdSet};
@@ -62,7 +65,6 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZero;
-use std::ops::ControlFlow;
 use std::ptr::NonNull;
 use std::{fmt, str};
 
@@ -84,7 +86,8 @@ pub use self::consts::{
     Const, ConstData, ConstInt, ConstKind, Expr, ScalarInt, UnevaluatedConst, ValTree,
 };
 pub use self::context::{
-    tls, CtxtInterners, DeducedParamAttrs, FreeRegionInfo, GlobalCtxt, Lift, TyCtxt, TyCtxtFeed,
+    tls, CtxtInterners, DeducedParamAttrs, Feed, FreeRegionInfo, GlobalCtxt, Lift, TyCtxt,
+    TyCtxtFeed,
 };
 pub use self::instance::{Instance, InstanceDef, ShortInstance, UnusedGenericParams};
 pub use self::list::List;
@@ -148,6 +151,7 @@ mod generic_args;
 mod generics;
 mod impls_ty;
 mod instance;
+mod intrinsic;
 mod list;
 mod opaque_types;
 mod parameterized;
@@ -187,6 +191,7 @@ pub struct ResolverGlobalCtxt {
     pub doc_link_resolutions: FxHashMap<LocalDefId, DocLinkResMap>,
     pub doc_link_traits_in_scope: FxHashMap<LocalDefId, Vec<DefId>>,
     pub all_macro_rules: FxHashMap<Symbol, Res<ast::NodeId>>,
+    pub stripped_cfg_items: Steal<Vec<StrippedCfgItem>>,
 }
 
 /// Resolutions that should only be used for lowering.
@@ -248,9 +253,9 @@ pub struct ImplHeader<'tcx> {
     pub predicates: Vec<Predicate<'tcx>>,
 }
 
-#[derive(Copy, Clone, Debug, TypeFoldable, TypeVisitable, TyEncodable, TyDecodable, HashStable)]
+#[derive(Copy, Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct ImplTraitHeader<'tcx> {
-    pub trait_ref: ty::TraitRef<'tcx>,
+    pub trait_ref: ty::EarlyBinder<ty::TraitRef<'tcx>>,
     pub polarity: ImplPolarity,
     pub unsafety: hir::Unsafety,
 }
@@ -596,7 +601,7 @@ impl<'tcx> TypeFoldable<TyCtxt<'tcx>> for Term<'tcx> {
 }
 
 impl<'tcx> TypeVisitable<TyCtxt<'tcx>> for Term<'tcx> {
-    fn visit_with<V: TypeVisitor<TyCtxt<'tcx>>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {
+    fn visit_with<V: TypeVisitor<TyCtxt<'tcx>>>(&self, visitor: &mut V) -> V::Result {
         self.unpack().visit_with(visitor)
     }
 }
@@ -840,31 +845,34 @@ pub struct OpaqueHiddenType<'tcx> {
 }
 
 impl<'tcx> OpaqueHiddenType<'tcx> {
-    pub fn report_mismatch(
+    pub fn build_mismatch_error(
         &self,
         other: &Self,
         opaque_def_id: LocalDefId,
         tcx: TyCtxt<'tcx>,
-    ) -> DiagnosticBuilder<'tcx> {
-        if let Some(diag) = tcx
-            .sess
-            .dcx()
-            .steal_diagnostic(tcx.def_span(opaque_def_id), StashKey::OpaqueHiddenTypeMismatch)
-        {
-            diag.cancel();
-        }
+    ) -> Result<Diag<'tcx>, ErrorGuaranteed> {
+        // We used to cancel here for slightly better error messages, but
+        // cancelling stashed diagnostics is no longer allowed because it
+        // causes problems when tracking whether errors have actually
+        // occurred.
+        tcx.sess.dcx().try_steal_modify_and_emit_err(
+            tcx.def_span(opaque_def_id),
+            StashKey::OpaqueHiddenTypeMismatch,
+            |_err| {},
+        );
+        (self.ty, other.ty).error_reported()?;
         // Found different concrete types for the opaque type.
         let sub_diag = if self.span == other.span {
             TypeMismatchReason::ConflictType { span: self.span }
         } else {
             TypeMismatchReason::PreviousUse { span: self.span }
         };
-        tcx.dcx().create_err(OpaqueHiddenTypeMismatch {
+        Ok(tcx.dcx().create_err(OpaqueHiddenTypeMismatch {
             self_ty: self.ty,
             other_ty: other.ty,
             other_span: other.span,
             sub: sub_diag,
-        })
+        }))
     }
 
     #[instrument(level = "debug", skip(tcx), ret)]
@@ -1037,8 +1045,8 @@ impl<'tcx> TypeFoldable<TyCtxt<'tcx>> for ParamEnv<'tcx> {
 }
 
 impl<'tcx> TypeVisitable<TyCtxt<'tcx>> for ParamEnv<'tcx> {
-    fn visit_with<V: TypeVisitor<TyCtxt<'tcx>>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {
-        self.caller_bounds().visit_with(visitor)?;
+    fn visit_with<V: TypeVisitor<TyCtxt<'tcx>>>(&self, visitor: &mut V) -> V::Result {
+        try_visit!(self.caller_bounds().visit_with(visitor));
         self.reveal().visit_with(visitor)
     }
 }
@@ -1471,7 +1479,7 @@ impl<'tcx> TyCtxt<'tcx> {
             .filter(move |item| item.kind == AssocKind::Fn && item.defaultness(self).has_value())
     }
 
-    pub fn repr_options_of_def(self, did: DefId) -> ReprOptions {
+    pub fn repr_options_of_def(self, did: LocalDefId) -> ReprOptions {
         let mut flags = ReprFlags::empty();
         let mut size = None;
         let mut max_align: Option<Align> = None;
@@ -1479,7 +1487,8 @@ impl<'tcx> TyCtxt<'tcx> {
 
         // Generate a deterministically-derived seed from the item's path hash
         // to allow for cross-crate compilation to actually work
-        let mut field_shuffle_seed = self.def_path_hash(did).0.to_smaller_hash().as_u64();
+        let mut field_shuffle_seed =
+            self.def_path_hash(did.to_def_id()).0.to_smaller_hash().as_u64();
 
         // If the user defined a custom seed for layout randomization, xor the item's
         // path hash with the user defined seed, this will allowing determinism while
@@ -1618,12 +1627,15 @@ impl<'tcx> TyCtxt<'tcx> {
         def_id1: DefId,
         def_id2: DefId,
     ) -> Option<ImplOverlapKind> {
-        let impl1 = self.impl_trait_header(def_id1).unwrap().instantiate_identity();
-        let impl2 = self.impl_trait_header(def_id2).unwrap().instantiate_identity();
+        let impl1 = self.impl_trait_header(def_id1).unwrap();
+        let impl2 = self.impl_trait_header(def_id2).unwrap();
+
+        let trait_ref1 = impl1.trait_ref.skip_binder();
+        let trait_ref2 = impl2.trait_ref.skip_binder();
 
         // If either trait impl references an error, they're allowed to overlap,
         // as one of them essentially doesn't exist.
-        if impl1.references_error() || impl2.references_error() {
+        if trait_ref1.references_error() || trait_ref2.references_error() {
             return Some(ImplOverlapKind::Permitted { marker: false });
         }
 
@@ -1644,7 +1656,7 @@ impl<'tcx> TyCtxt<'tcx> {
         let is_marker_overlap = {
             let is_marker_impl =
                 |trait_ref: TraitRef<'_>| -> bool { self.trait_def(trait_ref.def_id).is_marker };
-            is_marker_impl(impl1.trait_ref) && is_marker_impl(impl2.trait_ref)
+            is_marker_impl(trait_ref1) && is_marker_impl(trait_ref2)
         };
 
         if is_marker_overlap {
@@ -1928,18 +1940,6 @@ impl<'tcx> TyCtxt<'tcx> {
         matches!(self.trait_of_item(def_id), Some(trait_id) if self.has_attr(trait_id, sym::const_trait))
     }
 
-    /// Returns the `DefId` of the item within which the `impl Trait` is declared.
-    /// For type-alias-impl-trait this is the `type` alias.
-    /// For impl-trait-in-assoc-type this is the assoc type.
-    /// For return-position-impl-trait this is the function.
-    pub fn impl_trait_parent(self, mut def_id: LocalDefId) -> LocalDefId {
-        // Find the surrounding item (type alias or assoc type)
-        while let DefKind::OpaqueTy = self.def_kind(def_id) {
-            def_id = self.local_parent(def_id);
-        }
-        def_id
-    }
-
     pub fn impl_method_has_trait_impl_trait_tys(self, def_id: DefId) -> bool {
         if self.def_kind(def_id) != DefKind::AssocFn {
             return false;
@@ -1986,8 +1986,10 @@ pub fn uint_ty(uty: ast::UintTy) -> UintTy {
 
 pub fn float_ty(fty: ast::FloatTy) -> FloatTy {
     match fty {
+        ast::FloatTy::F16 => FloatTy::F16,
         ast::FloatTy::F32 => FloatTy::F32,
         ast::FloatTy::F64 => FloatTy::F64,
+        ast::FloatTy::F128 => FloatTy::F128,
     }
 }
 

@@ -55,12 +55,13 @@ fn llvm_machine_type(cpu: &str) -> LLVMMachineType {
         "x86_64" => LLVMMachineType::AMD64,
         "x86" => LLVMMachineType::I386,
         "aarch64" => LLVMMachineType::ARM64,
+        "arm64ec" => LLVMMachineType::ARM64EC,
         "arm" => LLVMMachineType::ARM,
         _ => panic!("unsupported cpu type {cpu}"),
     }
 }
 
-impl<'a> ArchiveBuilder<'a> for LlvmArchiveBuilder<'a> {
+impl<'a> ArchiveBuilder for LlvmArchiveBuilder<'a> {
     fn add_archive(
         &mut self,
         archive: &Path,
@@ -107,7 +108,7 @@ impl<'a> ArchiveBuilder<'a> for LlvmArchiveBuilder<'a> {
 pub struct LlvmArchiveBuilderBuilder;
 
 impl ArchiveBuilderBuilder for LlvmArchiveBuilderBuilder {
-    fn new_archive_builder<'a>(&self, sess: &'a Session) -> Box<dyn ArchiveBuilder<'a> + 'a> {
+    fn new_archive_builder<'a>(&self, sess: &'a Session) -> Box<dyn ArchiveBuilder + 'a> {
         // FIXME use ArArchiveBuilder on most targets again once reading thin archives is
         // implemented
         if true {
@@ -313,7 +314,7 @@ fn get_llvm_object_symbols(
             llvm::LLVMRustGetSymbols(
                 buf.as_ptr(),
                 buf.len(),
-                &mut *state as *mut &mut _ as *mut c_void,
+                std::ptr::addr_of_mut!(*state) as *mut c_void,
                 callback,
                 error_callback,
             )

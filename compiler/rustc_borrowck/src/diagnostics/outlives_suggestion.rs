@@ -5,7 +5,7 @@
 #![allow(rustc::untranslatable_diagnostic)]
 
 use rustc_data_structures::fx::FxIndexSet;
-use rustc_errors::DiagnosticBuilder;
+use rustc_errors::Diag;
 use rustc_middle::ty::RegionVid;
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
@@ -134,14 +134,13 @@ impl OutlivesSuggestionBuilder {
 
                 for (r, bound) in unified.into_iter() {
                     if !unified_already.contains(fr) {
-                        suggested.push(SuggestedConstraint::Equal(fr_name.clone(), bound));
+                        suggested.push(SuggestedConstraint::Equal(fr_name, bound));
                         unified_already.insert(r);
                     }
                 }
 
                 if !other.is_empty() {
-                    let other =
-                        other.iter().map(|(_, rname)| rname.clone()).collect::<SmallVec<_>>();
+                    let other = other.iter().map(|(_, rname)| *rname).collect::<SmallVec<_>>();
                     suggested.push(SuggestedConstraint::Outlives(fr_name, other))
                 }
             }
@@ -158,13 +157,12 @@ impl OutlivesSuggestionBuilder {
         self.constraints_to_add.entry(fr).or_default().push(outlived_fr);
     }
 
-    /// Emit an intermediate note on the given `DiagnosticBuilder` if the involved regions are
-    /// suggestable.
+    /// Emit an intermediate note on the given `Diag` if the involved regions are suggestable.
     pub(crate) fn intermediate_suggestion(
         &mut self,
         mbcx: &MirBorrowckCtxt<'_, '_>,
         errci: &ErrorConstraintInfo<'_>,
-        diag: &mut DiagnosticBuilder<'_>,
+        diag: &mut Diag<'_>,
     ) {
         // Emit an intermediate note.
         let fr_name = self.region_vid_to_name(mbcx, errci.fr);

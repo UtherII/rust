@@ -1,6 +1,6 @@
 //! The `Visitor` responsible for actually checking a `mir::Body` for invalid operations.
 
-use rustc_errors::{DiagnosticBuilder, ErrorGuaranteed};
+use rustc_errors::{Diag, ErrorGuaranteed};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_index::bit_set::BitSet;
@@ -17,7 +17,7 @@ use rustc_trait_selection::traits::{self, ObligationCauseCode, ObligationCtxt};
 use rustc_type_ir::visit::{TypeSuperVisitable, TypeVisitor};
 
 use std::mem;
-use std::ops::{ControlFlow, Deref};
+use std::ops::Deref;
 
 use super::ops::{self, NonConstOp, Status};
 use super::qualifs::{self, HasMutInterior, NeedsDrop, NeedsNonConstDrop};
@@ -164,9 +164,9 @@ struct LocalReturnTyVisitor<'ck, 'mir, 'tcx> {
 }
 
 impl<'ck, 'mir, 'tcx> TypeVisitor<TyCtxt<'tcx>> for LocalReturnTyVisitor<'ck, 'mir, 'tcx> {
-    fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
+    fn visit_ty(&mut self, t: Ty<'tcx>) {
         match t.kind() {
-            ty::FnPtr(_) => ControlFlow::Continue(()),
+            ty::FnPtr(_) => {}
             ty::Ref(_, _, hir::Mutability::Mut) => {
                 self.checker.check_op(ops::ty::MutRef(self.kind));
                 t.super_visit_with(self)
@@ -187,7 +187,7 @@ pub struct Checker<'mir, 'tcx> {
     local_has_storage_dead: Option<BitSet<Local>>,
 
     error_emitted: Option<ErrorGuaranteed>,
-    secondary_errors: Vec<DiagnosticBuilder<'tcx>>,
+    secondary_errors: Vec<Diag<'tcx>>,
 }
 
 impl<'mir, 'tcx> Deref for Checker<'mir, 'tcx> {
@@ -318,12 +318,12 @@ impl<'mir, 'tcx> Checker<'mir, 'tcx> {
         assert!(err.is_error());
 
         match op.importance() {
-            ops::DiagnosticImportance::Primary => {
+            ops::DiagImportance::Primary => {
                 let reported = err.emit();
                 self.error_emitted = Some(reported);
             }
 
-            ops::DiagnosticImportance::Secondary => self.secondary_errors.push(err),
+            ops::DiagImportance::Secondary => self.secondary_errors.push(err),
         }
     }
 
@@ -558,7 +558,7 @@ impl<'tcx> Visitor<'tcx> for Checker<'_, 'tcx> {
             Rvalue::Cast(_, _, _) => {}
 
             Rvalue::NullaryOp(
-                NullOp::SizeOf | NullOp::AlignOf | NullOp::OffsetOf(_) | NullOp::DebugAssertions,
+                NullOp::SizeOf | NullOp::AlignOf | NullOp::OffsetOf(_) | NullOp::UbCheck(_),
                 _,
             ) => {}
             Rvalue::ShallowInitBox(_, _) => {}
@@ -581,7 +581,6 @@ impl<'tcx> Visitor<'tcx> for Checker<'_, 'tcx> {
                 if is_int_bool_or_char(lhs_ty) && is_int_bool_or_char(rhs_ty) {
                     // Int, bool, and char operations are fine.
                 } else if lhs_ty.is_fn_ptr() || lhs_ty.is_unsafe_ptr() {
-                    assert_eq!(lhs_ty, rhs_ty);
                     assert!(matches!(
                         op,
                         BinOp::Eq

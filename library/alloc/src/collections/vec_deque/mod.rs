@@ -559,6 +559,30 @@ impl<T> VecDeque<T> {
     pub fn with_capacity(capacity: usize) -> VecDeque<T> {
         Self::with_capacity_in(capacity, Global)
     }
+
+    /// Creates an empty deque with space for at least `capacity` elements.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the capacity exceeds `isize::MAX` _bytes_,
+    /// or if the allocator reports allocation failure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(try_with_capacity)]
+    /// # #[allow(unused)]
+    /// # fn example() -> Result<(), std::collections::TryReserveError> {
+    /// use std::collections::VecDeque;
+    ///
+    /// let deque: VecDeque<u32> = VecDeque::try_with_capacity(10)?;
+    /// # Ok(()) }
+    /// ```
+    #[inline]
+    #[unstable(feature = "try_with_capacity", issue = "91913")]
+    pub fn try_with_capacity(capacity: usize) -> Result<VecDeque<T>, TryReserveError> {
+        Ok(VecDeque { head: 0, len: 0, buf: RawVec::try_with_capacity_in(capacity, Global)? })
+    }
 }
 
 impl<T, A: Allocator> VecDeque<T, A> {
@@ -1209,6 +1233,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(deque.len(), 1);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("length", "size")]
     pub fn len(&self) -> usize {
         self.len
     }
@@ -1491,6 +1516,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(d.front(), Some(&1));
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("first")]
     pub fn front(&self) -> Option<&T> {
         self.get(0)
     }
@@ -1535,6 +1561,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(d.back(), Some(&2));
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("last")]
     pub fn back(&self) -> Option<&T> {
         self.get(self.len.wrapping_sub(1))
     }
@@ -1654,6 +1681,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(3, *buf.back().unwrap());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("push", "put", "append")]
     pub fn push_back(&mut self, value: T) {
         if self.is_full() {
             self.grow();
@@ -1813,6 +1841,7 @@ impl<T, A: Allocator> VecDeque<T, A> {
     /// assert_eq!(buf, [1, 3]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("delete", "take")]
     pub fn remove(&mut self, index: usize) -> Option<T> {
         if self.len <= index {
             return None;

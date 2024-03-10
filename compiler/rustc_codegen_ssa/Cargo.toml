@@ -7,8 +7,8 @@ edition = "2021"
 # tidy-alphabetical-start
 ar_archive_writer = "0.1.5"
 bitflags = "2.4.1"
-cc = "1.0.69"
-itertools = "0.11"
+cc = "1.0.90"
+itertools = "0.12"
 jobserver = "0.1.28"
 pathdiff = "0.2.0"
 regex = "1.4"
@@ -38,6 +38,7 @@ tempfile = "3.2"
 thin-vec = "0.2.12"
 thorin-dwp = "0.7"
 tracing = "0.1"
+wasm-encoder = "0.200.0"
 # tidy-alphabetical-end
 
 [target.'cfg(unix)'.dependencies]

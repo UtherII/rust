@@ -1914,7 +1914,7 @@ impl<T: ?Sized, A: Allocator> Arc<T, A> {
 
             // Copy value as bytes
             ptr::copy_nonoverlapping(
-                &*src as *const T as *const u8,
+                core::ptr::addr_of!(*src) as *const u8,
                 ptr::addr_of_mut!((*ptr).data) as *mut u8,
                 value_size,
             );
@@ -2555,7 +2555,9 @@ impl<T> Weak<T> {
     #[must_use]
     pub const fn new() -> Weak<T> {
         Weak {
-            ptr: unsafe { NonNull::new_unchecked(ptr::invalid_mut::<ArcInner<T>>(usize::MAX)) },
+            ptr: unsafe {
+                NonNull::new_unchecked(ptr::without_provenance_mut::<ArcInner<T>>(usize::MAX))
+            },
             alloc: Global,
         }
     }
@@ -2583,7 +2585,9 @@ impl<T, A: Allocator> Weak<T, A> {
     #[unstable(feature = "allocator_api", issue = "32838")]
     pub fn new_in(alloc: A) -> Weak<T, A> {
         Weak {
-            ptr: unsafe { NonNull::new_unchecked(ptr::invalid_mut::<ArcInner<T>>(usize::MAX)) },
+            ptr: unsafe {
+                NonNull::new_unchecked(ptr::without_provenance_mut::<ArcInner<T>>(usize::MAX))
+            },
             alloc,
         }
     }
@@ -2715,7 +2719,7 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// [`from_raw`]: Weak::from_raw
     /// [`as_ptr`]: Weak::as_ptr
-    #[must_use = "`self` will be dropped if the result is not used"]
+    #[must_use = "losing the pointer will leak memory"]
     #[stable(feature = "weak_into_raw", since = "1.45.0")]
     pub fn into_raw(self) -> *const T {
         let result = self.as_ptr();
@@ -3261,7 +3265,7 @@ impl<T: ?Sized + fmt::Debug, A: Allocator> fmt::Debug for Arc<T, A> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized, A: Allocator> fmt::Pointer for Arc<T, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Pointer::fmt(&(&**self as *const T), f)
+        fmt::Pointer::fmt(&core::ptr::addr_of!(**self), f)
     }
 }
 

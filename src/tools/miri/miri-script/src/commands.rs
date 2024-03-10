@@ -356,11 +356,17 @@ impl Command {
             .unwrap_or_else(|_| "0".into())
             .parse()
             .context("failed to parse MIRI_SEED_START")?;
-        let seed_count: u64 = env::var("MIRI_SEEDS")
-            .unwrap_or_else(|_| "256".into())
-            .parse()
-            .context("failed to parse MIRI_SEEDS")?;
-        let seed_end = seed_start + seed_count;
+        let seed_end: u64 = match (env::var("MIRI_SEEDS"), env::var("MIRI_SEED_END")) {
+            (Ok(_), Ok(_)) => bail!("Only one of MIRI_SEEDS and MIRI_SEED_END may be set"),
+            (Ok(seeds), Err(_)) =>
+                seed_start + seeds.parse::<u64>().context("failed to parse MIRI_SEEDS")?,
+            (Err(_), Ok(seed_end)) => seed_end.parse().context("failed to parse MIRI_SEED_END")?,
+            (Err(_), Err(_)) => seed_start + 256,
+        };
+        if seed_end <= seed_start {
+            bail!("the end of the seed range must be larger than the start.");
+        }
+
         let Some((command_name, trailing_args)) = command.split_first() else {
             bail!("expected many-seeds command to be non-empty");
         };
@@ -504,11 +510,11 @@ impl Command {
         let miri_flags = flagsplit(&miri_flags);
         let toolchain = &e.toolchain;
         let extra_flags = &e.cargo_extra_flags;
-        let edition_flags = (!have_edition).then_some("--edition=2021"); // keep in sync with `compiletest.rs`.`
+        let edition_flags = (!have_edition).then_some("--edition=2021"); // keep in sync with `tests/ui.rs`.`
         if dep {
             cmd!(
                 e.sh,
-                "cargo +{toolchain} --quiet test --test compiletest {extra_flags...} --manifest-path {miri_manifest} -- --miri-run-dep-mode {miri_flags...} {edition_flags...} {flags...}"
+                "cargo +{toolchain} --quiet test {extra_flags...} --manifest-path {miri_manifest} --test ui -- --miri-run-dep-mode {miri_flags...} {edition_flags...} {flags...}"
             ).quiet().run()?;
         } else {
             cmd!(
@@ -520,37 +526,27 @@ impl Command {
     }
 
     fn fmt(flags: Vec<OsString>) -> Result<()> {
+        use itertools::Itertools;
+
         let e = MiriEnv::new()?;
-        let toolchain = &e.toolchain;
         let config_path = path!(e.miri_dir / "rustfmt.toml");
 
-        let mut cmd = cmd!(
-            e.sh,
-            "rustfmt +{toolchain} --edition=2021 --config-path {config_path} --unstable-features --skip-children {flags...}"
-        );
-        eprintln!("$ {cmd} ...");
+        // Collect each rust file in the miri repo.
+        let files = WalkDir::new(&e.miri_dir)
+            .into_iter()
+            .filter_entry(|entry| {
+                let name = entry.file_name().to_string_lossy();
+                let ty = entry.file_type();
+                if ty.is_file() {
+                    name.ends_with(".rs")
+                } else {
+                    // dir or symlink. skip `target` and `.git`.
+                    &name != "target" && &name != ".git"
+                }
+            })
+            .filter_ok(|item| item.file_type().is_file())
+            .map_ok(|item| item.into_path());
 
-        // Add all the filenames to the command.
-        // FIXME: `rustfmt` will follow the `mod` statements in these files, so we get a bunch of
-        // duplicate diffs.
-        for item in WalkDir::new(&e.miri_dir).into_iter().filter_entry(|entry| {
-            let name = entry.file_name().to_string_lossy();
-            let ty = entry.file_type();
-            if ty.is_file() {
-                name.ends_with(".rs")
-            } else {
-                // dir or symlink. skip `target` and `.git`.
-                &name != "target" && &name != ".git"
-            }
-        }) {
-            let item = item?;
-            if item.file_type().is_file() {
-                cmd = cmd.arg(item.into_path());
-            }
-        }
-
-        // We want our own error message, repeating the command is too much.
-        cmd.quiet().run().map_err(|_| anyhow!("`rustfmt` failed"))?;
-        Ok(())
+        e.format_files(files, &e.toolchain[..], &config_path, &flags[..])
     }
 }

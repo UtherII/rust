@@ -17,10 +17,10 @@
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use rustc_data_structures::unord::UnordMap;
-use rustc_errors::{Applicability, DiagnosticBuilder, ErrorGuaranteed, StashKey};
+use rustc_errors::{Applicability, Diag, ErrorGuaranteed, StashKey};
 use rustc_hir as hir;
 use rustc_hir::def::DefKind;
-use rustc_hir::def_id::{DefId, LocalDefId, LocalModDefId};
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{GenericParamKind, Node};
 use rustc_infer::infer::{InferCtxt, TyCtxtInferExt};
@@ -52,11 +52,6 @@ mod resolve_bound_vars;
 mod type_of;
 
 ///////////////////////////////////////////////////////////////////////////
-// Main entry point
-
-fn collect_mod_item_types(tcx: TyCtxt<'_>, module_def_id: LocalModDefId) {
-    tcx.hir().visit_item_likes_in_module(module_def_id, &mut CollectItemTypesVisitor { tcx });
-}
 
 pub fn provide(providers: &mut Providers) {
     resolve_bound_vars::provide(providers);
@@ -82,7 +77,6 @@ pub fn provide(providers: &mut Providers) {
         impl_trait_header,
         coroutine_kind,
         coroutine_for_closure,
-        collect_mod_item_types,
         is_type_alias_impl_trait,
         find_field,
         ..*providers
@@ -155,8 +149,8 @@ impl<'v> Visitor<'v> for HirPlaceholderCollector {
     }
 }
 
-struct CollectItemTypesVisitor<'tcx> {
-    tcx: TyCtxt<'tcx>,
+pub struct CollectItemTypesVisitor<'tcx> {
+    pub tcx: TyCtxt<'tcx>,
 }
 
 /// If there are any placeholder types (`_`), emit an error explaining that this is not allowed
@@ -186,7 +180,7 @@ pub(crate) fn placeholder_type_error_diag<'tcx>(
     suggest: bool,
     hir_ty: Option<&hir::Ty<'_>>,
     kind: &'static str,
-) -> DiagnosticBuilder<'tcx> {
+) -> Diag<'tcx> {
     if placeholder_types.is_empty() {
         return bad_placeholder(tcx, additional_spans, kind);
     }
@@ -335,7 +329,7 @@ fn bad_placeholder<'tcx>(
     tcx: TyCtxt<'tcx>,
     mut spans: Vec<Span>,
     kind: &'static str,
-) -> DiagnosticBuilder<'tcx> {
+) -> Diag<'tcx> {
     let kind = if kind.ends_with('s') { format!("{kind}es") } else { format!("{kind}s") };
 
     spans.sort();
@@ -760,7 +754,7 @@ fn convert_enum_variant_types(tcx: TyCtxt<'_>, def_id: DefId) {
         let wrapped_discr = prev_discr.map_or(initial, |d| d.wrap_incr(tcx));
         prev_discr = Some(
             if let ty::VariantDiscr::Explicit(const_def_id) = variant.discr {
-                def.eval_explicit_discr(tcx, const_def_id)
+                def.eval_explicit_discr(tcx, const_def_id).ok()
             } else if let Some(discr) = repr_type.disr_incr(tcx, prev_discr) {
                 Some(discr)
             } else {
@@ -791,7 +785,12 @@ fn convert_enum_variant_types(tcx: TyCtxt<'_>, def_id: DefId) {
 }
 
 fn find_field(tcx: TyCtxt<'_>, (def_id, ident): (DefId, Ident)) -> Option<FieldIdx> {
-    tcx.adt_def(def_id).non_enum_variant().fields.iter_enumerated().find_map(|(idx, field)| {
+    let adt = tcx.adt_def(def_id);
+    if adt.is_enum() {
+        return None;
+    }
+
+    adt.non_enum_variant().fields.iter_enumerated().find_map(|(idx, field)| {
         if field.is_unnamed() {
             let field_ty = tcx.type_of(field.did).instantiate_identity();
             let adt_def = field_ty.ty_adt_def().expect("expect Adt for unnamed field");
@@ -1025,9 +1024,17 @@ fn adt_def(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::AdtDef<'_> {
 
     let is_anonymous = item.ident.name == kw::Empty;
     let repr = if is_anonymous {
-        tcx.adt_def(tcx.local_parent(def_id)).repr()
+        let parent = tcx.local_parent(def_id);
+        if let Node::Item(item) = tcx.hir_node_by_def_id(parent)
+            && item.is_struct_or_union()
+        {
+            tcx.adt_def(parent).repr()
+        } else {
+            tcx.dcx().span_delayed_bug(item.span, "anonymous field inside non struct/union");
+            ty::ReprOptions::default()
+        }
     } else {
-        tcx.repr_options_of_def(def_id.to_def_id())
+        tcx.repr_options_of_def(def_id)
     };
     let (kind, variants) = match &item.kind {
         ItemKind::Enum(def, _) => {
@@ -1506,10 +1513,7 @@ fn suggest_impl_trait<'tcx>(
     None
 }
 
-fn impl_trait_header(
-    tcx: TyCtxt<'_>,
-    def_id: LocalDefId,
-) -> Option<ty::EarlyBinder<ty::ImplTraitHeader<'_>>> {
+fn impl_trait_header(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<ty::ImplTraitHeader<'_>> {
     let icx = ItemCtxt::new(tcx, def_id);
     let item = tcx.hir().expect_item(def_id);
     let impl_ = item.expect_impl();
@@ -1545,11 +1549,11 @@ fn impl_trait_header(
             } else {
                 icx.astconv().instantiate_mono_trait_ref(ast_trait_ref, selfty)
             };
-            ty::EarlyBinder::bind(ty::ImplTraitHeader {
-                trait_ref,
+            ty::ImplTraitHeader {
+                trait_ref: ty::EarlyBinder::bind(trait_ref),
                 unsafety: impl_.unsafety,
                 polarity: polarity_of_impl(tcx, def_id,  impl_, item.span)
-            })
+            }
         })
 }
 
@@ -1669,10 +1673,7 @@ fn compute_sig_of_foreign_fn_decl<'tcx>(
 
     // Feature gate SIMD types in FFI, since I am not sure that the
     // ABIs are handled at all correctly. -huonw
-    if abi != abi::Abi::RustIntrinsic
-        && abi != abi::Abi::PlatformIntrinsic
-        && !tcx.features().simd_ffi
-    {
+    if abi != abi::Abi::RustIntrinsic && !tcx.features().simd_ffi {
         let check = |ast_ty: &hir::Ty<'_>, ty: Ty<'_>| {
             if ty.is_simd() {
                 let snip = tcx

@@ -92,6 +92,7 @@
 #![warn(multiple_supertrait_upcastable)]
 #![allow(internal_features)]
 #![allow(rustdoc::redundant_explicit_links)]
+#![deny(ffi_unwind_calls)]
 //
 // Library features:
 // tidy-alphabetical-start
@@ -151,6 +152,7 @@
 #![feature(set_ptr_value)]
 #![feature(sized_type_properties)]
 #![feature(slice_from_ptr_range)]
+#![feature(slice_index_methods)]
 #![feature(slice_ptr_get)]
 #![feature(slice_ptr_len)]
 #![feature(slice_range)]
@@ -161,6 +163,7 @@
 #![feature(trusted_len)]
 #![feature(trusted_random_access)]
 #![feature(try_trait_v2)]
+#![feature(try_with_capacity)]
 #![feature(tuple_trait)]
 #![feature(unchecked_math)]
 #![feature(unicode_internals)]

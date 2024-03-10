@@ -4,15 +4,13 @@ use crate::error;
 use crate::mir::{ConstAlloc, ConstValue};
 use crate::ty::{layout, tls, Ty, TyCtxt, ValTree};
 
+use rustc_ast_ir::Mutability;
 use rustc_data_structures::sync::Lock;
-use rustc_errors::{
-    DiagnosticArgName, DiagnosticArgValue, DiagnosticMessage, ErrorGuaranteed, IntoDiagnosticArg,
-};
+use rustc_errors::{DiagArgName, DiagArgValue, DiagMessage, ErrorGuaranteed, IntoDiagnosticArg};
 use rustc_macros::HashStable;
 use rustc_session::CtfeBacktrace;
 use rustc_span::{def_id::DefId, Span, DUMMY_SP};
 use rustc_target::abi::{call, Align, Size, VariantIdx, WrappingRange};
-use rustc_type_ir::Mutability;
 
 use std::borrow::Cow;
 use std::{any::Any, backtrace::Backtrace, fmt};
@@ -237,8 +235,8 @@ pub enum InvalidMetaKind {
 }
 
 impl IntoDiagnosticArg for InvalidMetaKind {
-    fn into_diagnostic_arg(self) -> DiagnosticArgValue {
-        DiagnosticArgValue::Str(Cow::Borrowed(match self {
+    fn into_diagnostic_arg(self) -> DiagArgValue {
+        DiagArgValue::Str(Cow::Borrowed(match self {
             InvalidMetaKind::SliceTooBig => "slice_too_big",
             InvalidMetaKind::TooBig => "too_big",
         }))
@@ -271,8 +269,8 @@ pub struct Misalignment {
 macro_rules! impl_into_diagnostic_arg_through_debug {
     ($($ty:ty),*$(,)?) => {$(
         impl IntoDiagnosticArg for $ty {
-            fn into_diagnostic_arg(self) -> DiagnosticArgValue {
-                DiagnosticArgValue::Str(Cow::Owned(format!("{self:?}")))
+            fn into_diagnostic_arg(self) -> DiagArgValue {
+                DiagArgValue::Str(Cow::Owned(format!("{self:?}")))
             }
         }
     )*}
@@ -373,8 +371,8 @@ pub enum PointerKind {
 }
 
 impl IntoDiagnosticArg for PointerKind {
-    fn into_diagnostic_arg(self) -> DiagnosticArgValue {
-        DiagnosticArgValue::Str(
+    fn into_diagnostic_arg(self) -> DiagArgValue {
+        DiagArgValue::Str(
             match self {
                 Self::Ref(_) => "ref",
                 Self::Box => "box",
@@ -420,7 +418,6 @@ pub enum ValidationErrorKind<'tcx> {
     PartialPointer,
     PtrToUninhabited { ptr_kind: PointerKind, ty: Ty<'tcx> },
     PtrToStatic { ptr_kind: PointerKind },
-    MutableRefInConstOrStatic,
     ConstRefToMutable,
     ConstRefToExtern,
     MutableRefToImmutable,
@@ -490,10 +487,10 @@ pub enum ResourceExhaustionInfo {
 /// A trait for machine-specific errors (or other "machine stop" conditions).
 pub trait MachineStopType: Any + fmt::Debug + Send {
     /// The diagnostic message for this error
-    fn diagnostic_message(&self) -> DiagnosticMessage;
+    fn diagnostic_message(&self) -> DiagMessage;
     /// Add diagnostic arguments by passing name and value pairs to `adder`, which are passed to
     /// fluent for formatting the translated diagnostic message.
-    fn add_args(self: Box<Self>, adder: &mut dyn FnMut(DiagnosticArgName, DiagnosticArgValue));
+    fn add_args(self: Box<Self>, adder: &mut dyn FnMut(DiagArgName, DiagArgValue));
 }
 
 impl dyn MachineStopType {

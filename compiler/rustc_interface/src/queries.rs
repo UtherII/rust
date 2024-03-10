@@ -8,8 +8,7 @@ use rustc_codegen_ssa::CodegenResults;
 use rustc_data_structures::steal::Steal;
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::sync::{AppendOnlyIndexVec, FreezeLock, OnceLock, WorkerLocal};
-use rustc_hir::def::DefKind;
-use rustc_hir::def_id::{StableCrateId, CRATE_DEF_ID, LOCAL_CRATE};
+use rustc_hir::def_id::{StableCrateId, LOCAL_CRATE};
 use rustc_hir::definitions::Definitions;
 use rustc_incremental::setup_dep_graph;
 use rustc_metadata::creader::CStore;
@@ -120,7 +119,7 @@ impl<'tcx> Queries<'tcx> {
 
             rustc_builtin_macros::cmdline_attrs::inject(
                 &mut krate,
-                &sess.parse_sess,
+                &sess.psess,
                 &sess.opts.unstable_opts.crate_attr,
             );
 
@@ -144,10 +143,8 @@ impl<'tcx> Queries<'tcx> {
                 stable_crate_id,
             )) as _);
             let definitions = FreezeLock::new(Definitions::new(stable_crate_id));
-            let source_span = AppendOnlyIndexVec::new();
-            let _id = source_span.push(krate.spans.inner_span);
-            debug_assert_eq!(_id, CRATE_DEF_ID);
-            let untracked = Untracked { cstore, source_span, definitions };
+            let untracked =
+                Untracked { cstore, source_span: AppendOnlyIndexVec::new(), definitions };
 
             let qcx = passes::create_global_ctxt(
                 self.compiler,
@@ -172,9 +169,6 @@ impl<'tcx> Queries<'tcx> {
                 )));
                 feed.crate_for_resolver(tcx.arena.alloc(Steal::new((krate, pre_configured_attrs))));
                 feed.output_filenames(Arc::new(outputs));
-
-                let feed = tcx.feed_local_def_id(CRATE_DEF_ID);
-                feed.def_kind(DefKind::Mod);
             });
             Ok(qcx)
         })
@@ -222,12 +216,12 @@ impl<'tcx> Queries<'tcx> {
 
     pub fn codegen_and_build_linker(&'tcx self) -> Result<Linker> {
         self.global_ctxt()?.enter(|tcx| {
-            // Don't do code generation if there were any errors
-            self.compiler.sess.compile_status()?;
-
-            // If we have any delayed bugs, for example because we created TyKind::Error earlier,
-            // it's likely that codegen will only cause more ICEs, obscuring the original problem
-            self.compiler.sess.dcx().flush_delayed();
+            // Don't do code generation if there were any errors. Likewise if
+            // there were any delayed bugs, because codegen will likely cause
+            // more ICEs, obscuring the original problem.
+            if let Some(guar) = self.compiler.sess.dcx().has_errors_or_delayed_bugs() {
+                return Err(guar);
+            }
 
             // Hook for UI tests.
             Self::check_for_rustc_errors_attr(tcx);
@@ -261,7 +255,9 @@ impl Linker {
         let (codegen_results, work_products) =
             codegen_backend.join_codegen(self.ongoing_codegen, sess, &self.output_filenames);
 
-        sess.compile_status()?;
+        if let Some(guar) = sess.dcx().has_errors() {
+            return Err(guar);
+        }
 
         sess.time("serialize_work_products", || {
             rustc_incremental::save_work_product_index(sess, &self.dep_graph, work_products)

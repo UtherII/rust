@@ -76,7 +76,6 @@ use base_db::{
     CrateId, Edition,
 };
 use hir_expand::{
-    ast_id_map::{AstIdNode, FileAstId},
     builtin_attr_macro::BuiltinAttrExpander,
     builtin_derive_macro::BuiltinDeriveExpander,
     builtin_fn_macro::{BuiltinFnLikeExpander, EagerExpander},
@@ -91,7 +90,7 @@ use hir_expand::{
 use item_tree::ExternBlock;
 use la_arena::Idx;
 use nameres::DefMap;
-use span::{FileId, Span};
+use span::{AstIdNode, FileAstId, FileId, Span};
 use stdx::impl_from;
 use syntax::{ast, AstNode};
 
@@ -1342,8 +1341,11 @@ impl AsMacroCall for InFile<&ast::MacroCall> {
         let expands_to = hir_expand::ExpandTo::from_call_site(self.value);
         let ast_id = AstId::new(self.file_id, db.ast_id_map(self.file_id).ast_id(self.value));
         let span_map = db.span_map(self.file_id);
-        let path =
-            self.value.path().and_then(|path| path::ModPath::from_src(db, path, span_map.as_ref()));
+        let path = self.value.path().and_then(|path| {
+            path::ModPath::from_src(db, path, &mut |range| {
+                span_map.as_ref().span_for_range(range).ctx
+            })
+        });
 
         let Some(path) = path else {
             return Ok(ExpandResult::only_err(ExpandError::other("malformed macro invocation")));

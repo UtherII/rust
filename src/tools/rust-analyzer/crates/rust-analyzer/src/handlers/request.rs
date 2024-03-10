@@ -16,6 +16,7 @@ use ide::{
     ReferenceCategory, Runnable, RunnableKind, SingleResolve, SourceChange, TextEdit,
 };
 use ide_db::SymbolKind;
+use itertools::Itertools;
 use lsp_server::ErrorCode;
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
@@ -38,6 +39,7 @@ use crate::{
     config::{Config, RustfmtConfig, WorkspaceSymbolConfig},
     diff::diff,
     global_state::{GlobalState, GlobalStateSnapshot},
+    hack_recover_crate_name,
     line_index::LineEndings,
     lsp::{
         from_proto, to_proto,
@@ -189,6 +191,70 @@ pub(crate) fn handle_view_item_tree(
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
     let res = snap.analysis.view_item_tree(file_id)?;
     Ok(res)
+}
+
+pub(crate) fn handle_run_test(
+    state: &mut GlobalState,
+    params: lsp_ext::RunTestParams,
+) -> anyhow::Result<()> {
+    if let Some(_session) = state.test_run_session.take() {
+        state.send_notification::<lsp_ext::EndRunTest>(());
+    }
+    // We detect the lowest common ansector of all included tests, and
+    // run it. We ignore excluded tests for now, the client will handle
+    // it for us.
+    let lca = match params.include {
+        Some(tests) => tests
+            .into_iter()
+            .reduce(|x, y| {
+                let mut common_prefix = "".to_owned();
+                for (xc, yc) in x.chars().zip(y.chars()) {
+                    if xc != yc {
+                        break;
+                    }
+                    common_prefix.push(xc);
+                }
+                common_prefix
+            })
+            .unwrap_or_default(),
+        None => "".to_owned(),
+    };
+    let handle = if lca.is_empty() {
+        flycheck::CargoTestHandle::new(None)
+    } else if let Some((_, path)) = lca.split_once("::") {
+        flycheck::CargoTestHandle::new(Some(path))
+    } else {
+        flycheck::CargoTestHandle::new(None)
+    };
+    state.test_run_session = Some(handle?);
+    Ok(())
+}
+
+pub(crate) fn handle_discover_test(
+    snap: GlobalStateSnapshot,
+    params: lsp_ext::DiscoverTestParams,
+) -> anyhow::Result<lsp_ext::DiscoverTestResults> {
+    let _p = tracing::span!(tracing::Level::INFO, "handle_discover_test").entered();
+    let (tests, scope) = match params.test_id {
+        Some(id) => {
+            let crate_id = id.split_once("::").map(|it| it.0).unwrap_or(&id);
+            (snap.analysis.discover_tests_in_crate_by_test_id(crate_id)?, vec![crate_id.to_owned()])
+        }
+        None => (snap.analysis.discover_test_roots()?, vec![]),
+    };
+    for t in &tests {
+        hack_recover_crate_name::insert_name(t.id.clone());
+    }
+    Ok(lsp_ext::DiscoverTestResults {
+        tests: tests
+            .into_iter()
+            .map(|t| {
+                let line_index = t.file.and_then(|f| snap.file_line_index(f).ok());
+                to_proto::test_item(&snap, t, line_index.as_ref())
+            })
+            .collect(),
+        scope,
+    })
 }
 
 pub(crate) fn handle_view_crate_graph(
@@ -1055,9 +1121,8 @@ pub(crate) fn handle_references(
     let exclude_imports = snap.config.find_all_refs_exclude_imports();
     let exclude_tests = snap.config.find_all_refs_exclude_tests();
 
-    let refs = match snap.analysis.find_all_refs(position, None)? {
-        None => return Ok(None),
-        Some(refs) => refs,
+    let Some(refs) = snap.analysis.find_all_refs(position, None)? else {
+        return Ok(None);
     };
 
     let include_declaration = params.context.include_declaration;
@@ -1084,6 +1149,7 @@ pub(crate) fn handle_references(
                 })
                 .chain(decl)
         })
+        .unique()
         .filter_map(|frange| to_proto::location(&snap, frange).ok())
         .collect();
 
@@ -1802,10 +1868,10 @@ fn show_ref_command_link(
                 .into_iter()
                 .flat_map(|res| res.references)
                 .flat_map(|(file_id, ranges)| {
-                    ranges.into_iter().filter_map(move |(range, _)| {
-                        to_proto::location(snap, FileRange { file_id, range }).ok()
-                    })
+                    ranges.into_iter().map(move |(range, _)| FileRange { file_id, range })
                 })
+                .unique()
+                .filter_map(|range| to_proto::location(snap, range).ok())
                 .collect();
             let title = to_proto::reference_title(locations.len());
             let command = to_proto::command::show_references(title, &uri, position, locations);
@@ -1936,7 +2002,7 @@ fn run_rustfmt(
     let mut command = match snap.config.rustfmt() {
         RustfmtConfig::Rustfmt { extra_args, enable_range_formatting } => {
             // FIXME: Set RUSTUP_TOOLCHAIN
-            let mut cmd = process::Command::new(toolchain::rustfmt());
+            let mut cmd = process::Command::new(toolchain::Tool::Rustfmt.path());
             cmd.envs(snap.config.extra_env());
             cmd.args(extra_args);
 
@@ -2096,7 +2162,7 @@ pub(crate) fn fetch_dependency_list(
         .into_iter()
         .filter_map(|it| {
             let root_file_path = state.file_id_to_file_path(it.root_file_id);
-            crate_path(root_file_path).and_then(to_url).map(|path| CrateInfoResult {
+            crate_path(&root_file_path).and_then(to_url).map(|path| CrateInfoResult {
                 name: it.name,
                 version: it.version,
                 path,
@@ -2117,7 +2183,7 @@ pub(crate) fn fetch_dependency_list(
 /// An `Option` value representing the path to the directory of the crate with the given
 /// name, if such a crate is found. If no crate with the given name is found, this function
 /// returns `None`.
-fn crate_path(root_file_path: VfsPath) -> Option<VfsPath> {
+fn crate_path(root_file_path: &VfsPath) -> Option<VfsPath> {
     let mut current_dir = root_file_path.parent();
     while let Some(path) = current_dir {
         let cargo_toml_path = path.join("../Cargo.toml")?;

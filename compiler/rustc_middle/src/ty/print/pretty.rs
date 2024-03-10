@@ -27,7 +27,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 use std::iter;
-use std::ops::{ControlFlow, Deref, DerefMut};
+use std::ops::{Deref, DerefMut};
 
 // `pretty` is a separate module only for organization.
 use super::*;
@@ -64,7 +64,7 @@ thread_local! {
     static SHOULD_PREFIX_WITH_CRATE: Cell<bool> = const { Cell::new(false) };
     static NO_TRIMMED_PATH: Cell<bool> = const { Cell::new(false) };
     static FORCE_TRIMMED_PATH: Cell<bool> = const { Cell::new(false) };
-    static NO_QUERIES: Cell<bool> = const { Cell::new(false) };
+    static REDUCED_QUERIES: Cell<bool> = const { Cell::new(false) };
     static NO_VISIBLE_PATH: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -102,14 +102,14 @@ macro_rules! define_helper {
 }
 
 define_helper!(
-    /// Avoids running any queries during any prints that occur
+    /// Avoids running select queries during any prints that occur
     /// during the closure. This may alter the appearance of some
     /// types (e.g. forcing verbose printing for opaque types).
     /// This method is used during some queries (e.g. `explicit_item_bounds`
     /// for opaque types), to ensure that any debug printing that
     /// occurs during the query computation does not end up recursively
     /// calling the same query.
-    fn with_no_queries(NoQueriesGuard, NO_QUERIES);
+    fn with_reduced_queries(ReducedQueriesGuard, REDUCED_QUERIES);
     /// Force us to name impls with just the filename/line number. We
     /// normally try to use types. But at some points, notably while printing
     /// cycle errors, this can result in extra or suboptimal error output,
@@ -126,6 +126,15 @@ define_helper!(
     /// visible (public) reexports of types as paths.
     fn with_no_visible_paths(NoVisibleGuard, NO_VISIBLE_PATH);
 );
+
+/// Avoids running any queries during prints.
+pub macro with_no_queries($e:expr) {{
+    $crate::ty::print::with_reduced_queries!($crate::ty::print::with_forced_impl_filename_line!(
+        $crate::ty::print::with_no_trimmed_paths!($crate::ty::print::with_no_visible_paths!(
+            $crate::ty::print::with_forced_impl_filename_line!($e)
+        ))
+    ))
+}}
 
 /// The "region highlights" are used to control region printing during
 /// specific error messages. When a "region highlight" is enabled, it
@@ -659,7 +668,7 @@ pub trait PrettyPrinter<'tcx>: Printer<'tcx> + fmt::Write {
                 p!(")")
             }
             ty::FnDef(def_id, args) => {
-                if with_no_queries() {
+                if with_reduced_queries() {
                     p!(print_def_path(def_id, args));
                 } else {
                     let sig = self.tcx().fn_sig(def_id).instantiate(self.tcx(), args);
@@ -715,13 +724,7 @@ pub trait PrettyPrinter<'tcx>: Printer<'tcx> + fmt::Write {
                 p!(print_def_path(def_id, &[]));
             }
             ty::Alias(ty::Projection | ty::Inherent | ty::Weak, ref data) => {
-                if !(self.should_print_verbose() || with_no_queries())
-                    && self.tcx().is_impl_trait_in_trait(data.def_id)
-                {
-                    return self.pretty_print_opaque_impl_type(data.def_id, data.args);
-                } else {
-                    p!(print(data))
-                }
+                p!(print(data))
             }
             ty::Placeholder(placeholder) => match placeholder.bound.kind {
                 ty::BoundTyKind::Anon => p!(write("{placeholder:?}")),
@@ -765,7 +768,7 @@ pub trait PrettyPrinter<'tcx>: Printer<'tcx> + fmt::Write {
                         return Ok(());
                     }
                     _ => {
-                        if with_no_queries() {
+                        if with_reduced_queries() {
                             p!(print_def_path(def_id, &[]));
                             return Ok(());
                         } else {
@@ -1882,7 +1885,8 @@ impl DerefMut for FmtPrinter<'_, '_> {
 
 impl<'a, 'tcx> FmtPrinter<'a, 'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, ns: Namespace) -> Self {
-        let limit = if with_no_queries() { Limit::new(1048576) } else { tcx.type_length_limit() };
+        let limit =
+            if with_reduced_queries() { Limit::new(1048576) } else { tcx.type_length_limit() };
         Self::new_with_limit(tcx, ns, limit)
     }
 
@@ -2663,9 +2667,7 @@ impl<'tcx> FmtPrinter<'_, 'tcx> {
         }
 
         impl<'tcx> ty::visit::TypeVisitor<TyCtxt<'tcx>> for RegionNameCollector<'tcx> {
-            type BreakTy = ();
-
-            fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
+            fn visit_region(&mut self, r: ty::Region<'tcx>) {
                 trace!("address: {:p}", r.0.0);
 
                 // Collect all named lifetimes. These allow us to prevent duplication
@@ -2674,18 +2676,14 @@ impl<'tcx> FmtPrinter<'_, 'tcx> {
                 if let Some(name) = r.get_name() {
                     self.used_region_names.insert(name);
                 }
-
-                ControlFlow::Continue(())
             }
 
             // We collect types in order to prevent really large types from compiling for
             // a really long time. See issue #83150 for why this is necessary.
-            fn visit_ty(&mut self, ty: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
+            fn visit_ty(&mut self, ty: Ty<'tcx>) {
                 let not_previously_inserted = self.type_collector.insert(ty);
                 if not_previously_inserted {
                     ty.super_visit_with(self)
-                } else {
-                    ControlFlow::Continue(())
                 }
             }
         }
@@ -2725,7 +2723,7 @@ where
 pub struct TraitRefPrintOnlyTraitPath<'tcx>(ty::TraitRef<'tcx>);
 
 impl<'tcx> rustc_errors::IntoDiagnosticArg for TraitRefPrintOnlyTraitPath<'tcx> {
-    fn into_diagnostic_arg(self) -> rustc_errors::DiagnosticArgValue {
+    fn into_diagnostic_arg(self) -> rustc_errors::DiagArgValue {
         self.to_string().into_diagnostic_arg()
     }
 }
@@ -2742,7 +2740,7 @@ impl<'tcx> fmt::Debug for TraitRefPrintOnlyTraitPath<'tcx> {
 pub struct TraitRefPrintSugared<'tcx>(ty::TraitRef<'tcx>);
 
 impl<'tcx> rustc_errors::IntoDiagnosticArg for TraitRefPrintSugared<'tcx> {
-    fn into_diagnostic_arg(self) -> rustc_errors::DiagnosticArgValue {
+    fn into_diagnostic_arg(self) -> rustc_errors::DiagArgValue {
         self.to_string().into_diagnostic_arg()
     }
 }
@@ -2929,7 +2927,7 @@ define_print_and_forward_display! {
 
     ty::ExistentialTraitRef<'tcx> {
         // Use a type that can't appear in defaults of type parameters.
-        let dummy_self = Ty::new_fresh(cx.tcx(),0);
+        let dummy_self = Ty::new_fresh(cx.tcx(), 0);
         let trait_ref = self.with_self_ty(cx.tcx(), dummy_self);
         p!(print(trait_ref.print_only_trait_path()))
     }
@@ -2968,7 +2966,7 @@ define_print_and_forward_display! {
     }
 
     TraitRefPrintSugared<'tcx> {
-        if !with_no_queries()
+        if !with_reduced_queries()
             && let Some(kind) = cx.tcx().fn_trait_kind_from_def_id(self.0.def_id)
             && let ty::Tuple(args) = self.0.args.type_at(1).kind()
         {
@@ -3053,7 +3051,17 @@ define_print_and_forward_display! {
         if let DefKind::Impl { of_trait: false } = cx.tcx().def_kind(cx.tcx().parent(self.def_id)) {
             p!(pretty_print_inherent_projection(self))
         } else {
-            p!(print_def_path(self.def_id, self.args));
+            // If we're printing verbosely, or don't want to invoke queries
+            // (`is_impl_trait_in_trait`), then fall back to printing the def path.
+            // This is likely what you want if you're debugging the compiler anyways.
+            if !(cx.should_print_verbose() || with_reduced_queries())
+                && cx.tcx().is_impl_trait_in_trait(self.def_id)
+            {
+                return cx.pretty_print_opaque_impl_type(self.def_id, self.args);
+            } else {
+                p!(print_def_path(self.def_id, self.args));
+            }
+
         }
     }
 

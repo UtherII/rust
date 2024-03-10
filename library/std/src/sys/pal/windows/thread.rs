@@ -9,7 +9,7 @@ use crate::sys::handle::Handle;
 use crate::sys::stack_overflow;
 use crate::sys_common::FromInner;
 use crate::time::Duration;
-
+use alloc::ffi::CString;
 use core::ffi::c_void;
 
 use super::time::WaitableTimer;
@@ -26,11 +26,8 @@ impl Thread {
     pub unsafe fn new(stack: usize, p: Box<dyn FnOnce()>) -> io::Result<Thread> {
         let p = Box::into_raw(Box::new(p));
 
-        // FIXME On UNIX, we guard against stack sizes that are too small but
-        // that's because pthreads enforces that stacks are at least
-        // PTHREAD_STACK_MIN bytes big. Windows has no such lower limit, it's
-        // just that below a certain threshold you can't do anything useful.
-        // That threshold is application and architecture-specific, however.
+        // CreateThread rounds up values for the stack size to the nearest page size (at least 4kb).
+        // If a value of zero is given then the default stack size is used instead.
         let ret = c::CreateThread(
             ptr::null_mut(),
             stack,
@@ -69,6 +66,29 @@ impl Thread {
                 };
             };
         };
+    }
+
+    pub fn get_name() -> Option<CString> {
+        unsafe {
+            let mut ptr = core::ptr::null_mut();
+            let result = c::GetThreadDescription(c::GetCurrentThread(), &mut ptr);
+            if result < 0 {
+                return None;
+            }
+            let name = String::from_utf16_lossy({
+                let mut len = 0;
+                while *ptr.add(len) != 0 {
+                    len += 1;
+                }
+                core::slice::from_raw_parts(ptr, len)
+            })
+            .into_bytes();
+            // Attempt to free the memory.
+            // This should never fail but if it does then there's not much we can do about it.
+            let result = c::LocalFree(ptr.cast::<c_void>());
+            debug_assert!(result.is_null());
+            if name.is_empty() { None } else { Some(CString::from_vec_unchecked(name)) }
+        }
     }
 
     pub fn join(self) {

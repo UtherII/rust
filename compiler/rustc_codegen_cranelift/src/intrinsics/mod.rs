@@ -23,7 +23,7 @@ use rustc_middle::ty::layout::{HasParamEnv, ValidityRequirement};
 use rustc_middle::ty::print::{with_no_trimmed_paths, with_no_visible_paths};
 use rustc_middle::ty::GenericArgsRef;
 use rustc_span::source_map::Spanned;
-use rustc_span::symbol::{kw, sym, Symbol};
+use rustc_span::symbol::{sym, Symbol};
 
 pub(crate) use self::llvm::codegen_llvm_intrinsic_call;
 use crate::prelude::*;
@@ -391,12 +391,15 @@ fn codegen_float_intrinsic_call<'tcx>(
         | sym::ceilf32
         | sym::ceilf64
         | sym::truncf32
-        | sym::truncf64 => {
+        | sym::truncf64
+        | sym::sqrtf32
+        | sym::sqrtf64 => {
             let val = match intrinsic {
                 sym::fabsf32 | sym::fabsf64 => fx.bcx.ins().fabs(args[0]),
                 sym::floorf32 | sym::floorf64 => fx.bcx.ins().floor(args[0]),
                 sym::ceilf32 | sym::ceilf64 => fx.bcx.ins().ceil(args[0]),
                 sym::truncf32 | sym::truncf64 => fx.bcx.ins().trunc(args[0]),
+                sym::sqrtf32 | sym::sqrtf64 => fx.bcx.ins().sqrt(args[0]),
                 _ => unreachable!(),
             };
 
@@ -1132,7 +1135,7 @@ fn codegen_regular_intrinsic_call<'tcx>(
             ret.write_cvalue(fx, val);
         }
 
-        kw::Try => {
+        sym::catch_unwind => {
             intrinsic_args!(fx, args => (f, data, catch_fn); intrinsic);
             let f = f.load_scalar(fx);
             let data = data.load_scalar(fx);
@@ -1255,7 +1258,17 @@ fn codegen_regular_intrinsic_call<'tcx>(
 
         // Unimplemented intrinsics must have a fallback body. The fallback body is obtained
         // by converting the `InstanceDef::Intrinsic` to an `InstanceDef::Item`.
-        _ => return Err(Instance::new(instance.def_id(), instance.args)),
+        _ => {
+            let intrinsic = fx.tcx.intrinsic(instance.def_id()).unwrap();
+            if intrinsic.must_be_overridden {
+                span_bug!(
+                    source_info.span,
+                    "intrinsic {} must be overridden by codegen_cranelift, but isn't",
+                    intrinsic.name,
+                );
+            }
+            return Err(Instance::new(instance.def_id(), instance.args));
+        }
     }
 
     let ret_block = fx.get_block(destination.unwrap());

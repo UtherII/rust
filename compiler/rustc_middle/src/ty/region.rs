@@ -91,8 +91,8 @@ impl<'tcx> Region<'tcx> {
 
     /// Constructs a `RegionKind::ReError` region.
     #[track_caller]
-    pub fn new_error(tcx: TyCtxt<'tcx>, reported: ErrorGuaranteed) -> Region<'tcx> {
-        tcx.intern_region(ty::ReError(reported))
+    pub fn new_error(tcx: TyCtxt<'tcx>, guar: ErrorGuaranteed) -> Region<'tcx> {
+        tcx.intern_region(ty::ReError(guar))
     }
 
     /// Constructs a `RegionKind::ReError` region and registers a delayed bug to ensure it gets
@@ -133,6 +133,12 @@ impl<'tcx> Region<'tcx> {
             ty::ReErased => tcx.lifetimes.re_erased,
             ty::ReError(reported) => Region::new_error(tcx, reported),
         }
+    }
+}
+
+impl<'tcx> rustc_type_ir::new::Region<TyCtxt<'tcx>> for Region<'tcx> {
+    fn new_anon_bound(tcx: TyCtxt<'tcx>, debruijn: ty::DebruijnIndex, var: ty::BoundVar) -> Self {
+        Region::new_bound(tcx, debruijn, ty::BoundRegion { var, kind: ty::BoundRegionKind::BrAnon })
     }
 }
 

@@ -1,3 +1,5 @@
+//! The [`OsStr`] and [`OsString`] types and associated utilities.
+
 #[cfg(test)]
 mod tests;
 
@@ -155,7 +157,7 @@ impl OsString {
     /// # Safety
     ///
     /// As the encoding is unspecified, callers must pass in bytes that originated as a mixture of
-    /// validated UTF-8 and bytes from [`OsStr::as_encoded_bytes`] from within the same rust version
+    /// validated UTF-8 and bytes from [`OsStr::as_encoded_bytes`] from within the same Rust version
     /// built for the same target platform.  For example, reconstructing an `OsString` from bytes sent
     /// over the network or stored in a file will likely violate these safety rules.
     ///
@@ -211,7 +213,7 @@ impl OsString {
     /// ASCII.
     ///
     /// Note: As the encoding is unspecified, any sub-slice of bytes that is not valid UTF-8 should
-    /// be treated as opaque and only comparable within the same rust version built for the same
+    /// be treated as opaque and only comparable within the same Rust version built for the same
     /// target platform.  For example, sending the bytes over the network or storing it in a file
     /// will likely result in incompatible data.  See [`OsString`] for more encoding details
     /// and [`std::ffi`] for platform-specific, specified conversions.
@@ -255,6 +257,7 @@ impl OsString {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
+    #[rustc_confusables("append", "put")]
     pub fn push<T: AsRef<OsStr>>(&mut self, s: T) {
         self.inner.push_slice(&s.as_ref().inner)
     }
@@ -744,7 +747,7 @@ impl OsStr {
     /// # Safety
     ///
     /// As the encoding is unspecified, callers must pass in bytes that originated as a mixture of
-    /// validated UTF-8 and bytes from [`OsStr::as_encoded_bytes`] from within the same rust version
+    /// validated UTF-8 and bytes from [`OsStr::as_encoded_bytes`] from within the same Rust version
     /// built for the same target platform.  For example, reconstructing an `OsStr` from bytes sent
     /// over the network or stored in a file will likely violate these safety rules.
     ///
@@ -952,7 +955,7 @@ impl OsStr {
     /// ASCII.
     ///
     /// Note: As the encoding is unspecified, any sub-slice of bytes that is not valid UTF-8 should
-    /// be treated as opaque and only comparable within the same rust version built for the same
+    /// be treated as opaque and only comparable within the same Rust version built for the same
     /// target platform.  For example, sending the slice over the network or storing it in a file
     /// will likely result in incompatible byte slices.  See [`OsString`] for more encoding details
     /// and [`std::ffi`] for platform-specific, specified conversions.
@@ -1145,6 +1148,32 @@ impl OsStr {
     #[stable(feature = "osstring_ascii", since = "1.53.0")]
     pub fn eq_ignore_ascii_case<S: AsRef<OsStr>>(&self, other: S) -> bool {
         self.inner.eq_ignore_ascii_case(&other.as_ref().inner)
+    }
+
+    /// Returns an object that implements [`Display`] for safely printing an
+    /// [`OsStr`] that may contain non-Unicode data. This may perform lossy
+    /// conversion, depending on the platform.  If you would like an
+    /// implementation which escapes the [`OsStr`] please use [`Debug`]
+    /// instead.
+    ///
+    /// [`Display`]: fmt::Display
+    /// [`Debug`]: fmt::Debug
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(os_str_display)]
+    /// use std::ffi::OsStr;
+    ///
+    /// let s = OsStr::new("Hello, world!");
+    /// println!("{}", s.display());
+    /// ```
+    #[unstable(feature = "os_str_display", issue = "120048")]
+    #[must_use = "this does not display the `OsStr`; \
+                  it returns an object that can be displayed"]
+    #[inline]
+    pub fn display(&self) -> Display<'_> {
+        Display { os_str: self }
     }
 }
 
@@ -1440,9 +1469,42 @@ impl fmt::Debug for OsStr {
     }
 }
 
-impl OsStr {
-    pub(crate) fn display(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.inner, formatter)
+/// Helper struct for safely printing an [`OsStr`] with [`format!`] and `{}`.
+///
+/// An [`OsStr`] might contain non-Unicode data. This `struct` implements the
+/// [`Display`] trait in a way that mitigates that. It is created by the
+/// [`display`](OsStr::display) method on [`OsStr`]. This may perform lossy
+/// conversion, depending on the platform. If you would like an implementation
+/// which escapes the [`OsStr`] please use [`Debug`] instead.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(os_str_display)]
+/// use std::ffi::OsStr;
+///
+/// let s = OsStr::new("Hello, world!");
+/// println!("{}", s.display());
+/// ```
+///
+/// [`Display`]: fmt::Display
+/// [`format!`]: crate::format
+#[unstable(feature = "os_str_display", issue = "120048")]
+pub struct Display<'a> {
+    os_str: &'a OsStr,
+}
+
+#[unstable(feature = "os_str_display", issue = "120048")]
+impl fmt::Debug for Display<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.os_str, f)
+    }
+}
+
+#[unstable(feature = "os_str_display", issue = "120048")]
+impl fmt::Display for Display<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.os_str.inner, f)
     }
 }
 

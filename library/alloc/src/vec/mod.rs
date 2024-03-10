@@ -481,7 +481,23 @@ impl<T> Vec<T> {
         Self::with_capacity_in(capacity, Global)
     }
 
-    /// Creates a `Vec<T>` directly from a pointer, a capacity, and a length.
+    /// Constructs a new, empty `Vec<T>` with at least the specified capacity.
+    ///
+    /// The vector will be able to hold at least `capacity` elements without
+    /// reallocating. This method is allowed to allocate for more elements than
+    /// `capacity`. If `capacity` is 0, the vector will not allocate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the capacity exceeds `isize::MAX` _bytes_,
+    /// or if the allocator reports allocation failure.
+    #[inline]
+    #[unstable(feature = "try_with_capacity", issue = "91913")]
+    pub fn try_with_capacity(capacity: usize) -> Result<Self, TryReserveError> {
+        Self::try_with_capacity_in(capacity, Global)
+    }
+
+    /// Creates a `Vec<T>` directly from a pointer, a length, and a capacity.
     ///
     /// # Safety
     ///
@@ -672,7 +688,25 @@ impl<T, A: Allocator> Vec<T, A> {
         Vec { buf: RawVec::with_capacity_in(capacity, alloc), len: 0 }
     }
 
-    /// Creates a `Vec<T, A>` directly from a pointer, a capacity, a length,
+    /// Constructs a new, empty `Vec<T, A>` with at least the specified capacity
+    /// with the provided allocator.
+    ///
+    /// The vector will be able to hold at least `capacity` elements without
+    /// reallocating. This method is allowed to allocate for more elements than
+    /// `capacity`. If `capacity` is 0, the vector will not allocate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the capacity exceeds `isize::MAX` _bytes_,
+    /// or if the allocator reports allocation failure.
+    #[inline]
+    #[unstable(feature = "allocator_api", issue = "32838")]
+    // #[unstable(feature = "try_with_capacity", issue = "91913")]
+    pub fn try_with_capacity_in(capacity: usize, alloc: A) -> Result<Self, TryReserveError> {
+        Ok(Vec { buf: RawVec::try_with_capacity_in(capacity, alloc)?, len: 0 })
+    }
+
+    /// Creates a `Vec<T, A>` directly from a pointer, a length, a capacity,
     /// and an allocator.
     ///
     /// # Safety
@@ -786,7 +820,7 @@ impl<T, A: Allocator> Vec<T, A> {
         unsafe { Vec { buf: RawVec::from_raw_parts_in(ptr, capacity, alloc), len: length } }
     }
 
-    /// Decomposes a `Vec<T>` into its raw components.
+    /// Decomposes a `Vec<T>` into its raw components: `(pointer, length, capacity)`.
     ///
     /// Returns the raw pointer to the underlying data, the length of
     /// the vector (in elements), and the allocated capacity of the
@@ -824,7 +858,7 @@ impl<T, A: Allocator> Vec<T, A> {
         (me.as_mut_ptr(), me.len(), me.capacity())
     }
 
-    /// Decomposes a `Vec<T>` into its raw components.
+    /// Decomposes a `Vec<T>` into its raw components: `(pointer, length, capacity, allocator)`.
     ///
     /// Returns the raw pointer to the underlying data, the length of the vector (in elements),
     /// the allocated capacity of the data (in elements), and the allocator. These are the same
@@ -1490,6 +1524,12 @@ impl<T, A: Allocator> Vec<T, A> {
     /// vec.insert(4, 5);
     /// assert_eq!(vec, [1, 4, 2, 3, 5]);
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// Takes *O*([`Vec::len`]) time. All items after the insertion index must be
+    /// shifted to the right. In the worst case, all elements are shifted when
+    /// the insertion index is 0.
     #[cfg(not(no_global_oom_handling))]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn insert(&mut self, index: usize, element: T) {
@@ -1554,6 +1594,7 @@ impl<T, A: Allocator> Vec<T, A> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[track_caller]
+    #[rustc_confusables("delete", "take")]
     pub fn remove(&mut self, index: usize) -> T {
         #[cold]
         #[cfg_attr(not(feature = "panic_immediate_abort"), inline(never))]
@@ -1912,9 +1953,17 @@ impl<T, A: Allocator> Vec<T, A> {
     /// vec.push(3);
     /// assert_eq!(vec, [1, 2, 3]);
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// Takes amortized *O*(1) time. If the vector's length would exceed its
+    /// capacity after the push, *O*(*capacity*) time is taken to copy the
+    /// vector's elements to a larger allocation. This expensive operation is
+    /// offset by the *capacity* *O*(1) insertions it allows.
     #[cfg(not(no_global_oom_handling))]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("push_back", "put", "append")]
     pub fn push(&mut self, value: T) {
         // This will panic or abort if we would allocate > isize::MAX bytes
         // or if the length increment would overflow for zero-sized types.
@@ -1959,6 +2008,10 @@ impl<T, A: Allocator> Vec<T, A> {
     /// }
     /// assert_eq!(from_iter_fallible(0..100), Ok(Vec::from_iter(0..100)));
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// Takes *O*(1) time.
     #[inline]
     #[unstable(feature = "vec_push_within_capacity", issue = "100486")]
     pub fn push_within_capacity(&mut self, value: T) -> Result<(), T> {
@@ -1988,6 +2041,10 @@ impl<T, A: Allocator> Vec<T, A> {
     /// assert_eq!(vec.pop(), Some(3));
     /// assert_eq!(vec, [1, 2]);
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// Takes *O*(1) time.
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn pop(&mut self) -> Option<T> {
@@ -2141,6 +2198,7 @@ impl<T, A: Allocator> Vec<T, A> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("length", "size")]
     pub fn len(&self) -> usize {
         self.len
     }

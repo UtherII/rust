@@ -21,7 +21,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         intrinsic_name: &str,
         generic_args: ty::GenericArgsRef<'tcx>,
         args: &[OpTy<'tcx, Provenance>],
-        dest: &PlaceTy<'tcx, Provenance>,
+        dest: &MPlaceTy<'tcx, Provenance>,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         match intrinsic_name {
@@ -40,7 +40,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             => {
                 let [op] = check_arg_count(args)?;
                 let (op, op_len) = this.operand_to_simd(op)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 assert_eq!(dest_len, op_len);
 
@@ -83,8 +83,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                             let op = op.to_scalar();
                             // "Bitwise" operation, no NaN adjustments
                             match float_ty {
+                                FloatTy::F16 => unimplemented!("f16_f128"),
                                 FloatTy::F32 => Scalar::from_f32(op.to_f32()?.abs()),
                                 FloatTy::F64 => Scalar::from_f64(op.to_f64()?.abs()),
+                                FloatTy::F128 => unimplemented!("f16_f128"),
                             }
                         }
                         Op::Sqrt => {
@@ -93,6 +95,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                             };
                             // FIXME using host floats
                             match float_ty {
+                                FloatTy::F16 => unimplemented!("f16_f128"),
                                 FloatTy::F32 => {
                                     let f = op.to_scalar().to_f32()?;
                                     let res = f.to_host().sqrt().to_soft();
@@ -105,6 +108,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                                     let res = this.adjust_nan(res, &[f]);
                                     Scalar::from(res)
                                 }
+                                FloatTy::F128 => unimplemented!("f16_f128"),
                             }
                         }
                         Op::Round(rounding) => {
@@ -112,6 +116,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                                 span_bug!(this.cur_span(), "{} operand is not a float", intrinsic_name)
                             };
                             match float_ty {
+                                FloatTy::F16 => unimplemented!("f16_f128"),
                                 FloatTy::F32 => {
                                     let f = op.to_scalar().to_f32()?;
                                     let res = f.round_to_integral(rounding).value;
@@ -124,6 +129,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                                     let res = this.adjust_nan(res, &[f]);
                                     Scalar::from_f64(res)
                                 }
+                                FloatTy::F128 => unimplemented!("f16_f128"),
                             }
                         }
                         Op::Numeric(name) => {
@@ -161,7 +167,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let [left, right] = check_arg_count(args)?;
                 let (left, left_len) = this.operand_to_simd(left)?;
                 let (right, right_len) = this.operand_to_simd(right)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 assert_eq!(dest_len, left_len);
                 assert_eq!(dest_len, right_len);
@@ -249,7 +255,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let (a, a_len) = this.operand_to_simd(a)?;
                 let (b, b_len) = this.operand_to_simd(b)?;
                 let (c, c_len) = this.operand_to_simd(c)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 assert_eq!(dest_len, a_len);
                 assert_eq!(dest_len, b_len);
@@ -267,6 +273,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                         span_bug!(this.cur_span(), "{} operand is not a float", intrinsic_name)
                     };
                     let val = match float_ty {
+                        FloatTy::F16 => unimplemented!("f16_f128"),
                         FloatTy::F32 => {
                             let a = a.to_f32()?;
                             let b = b.to_f32()?;
@@ -283,6 +290,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                             let res = this.adjust_nan(res, &[a, b, c]);
                             Scalar::from(res)
                         }
+                        FloatTy::F128 => unimplemented!("f16_f128"),
                     };
                     this.write_scalar(val, &dest)?;
                 }
@@ -382,7 +390,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let (mask, mask_len) = this.operand_to_simd(mask)?;
                 let (yes, yes_len) = this.operand_to_simd(yes)?;
                 let (no, no_len) = this.operand_to_simd(no)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 assert_eq!(dest_len, mask_len);
                 assert_eq!(dest_len, yes_len);
@@ -403,7 +411,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let [mask, yes, no] = check_arg_count(args)?;
                 let (yes, yes_len) = this.operand_to_simd(yes)?;
                 let (no, no_len) = this.operand_to_simd(no)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
                 let bitmask_len = dest_len.next_multiple_of(8);
 
                 // The mask must be an integer or an array.
@@ -479,7 +487,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             "cast" | "as" | "cast_ptr" | "expose_addr" | "from_exposed_addr" => {
                 let [op] = check_arg_count(args)?;
                 let (op, op_len) = this.operand_to_simd(op)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 assert_eq!(dest_len, op_len);
 
@@ -537,7 +545,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let [left, right] = check_arg_count(args)?;
                 let (left, left_len) = this.operand_to_simd(left)?;
                 let (right, right_len) = this.operand_to_simd(right)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 let index = generic_args[2]
                     .expect_const()
@@ -563,9 +571,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                         let right_idx = src_index.checked_sub(left_len).unwrap();
                         this.read_immediate(&this.project_index(&right, right_idx)?)?
                     } else {
-                        span_bug!(
-                            this.cur_span(),
-                            "simd_shuffle index {src_index} is out of bounds for 2 vectors of size {left_len}",
+                        throw_ub_format!(
+                            "`simd_shuffle_generic` index {src_index} is out-of-bounds for 2 vectors with length {dest_len}"
                         );
                     };
                     this.write_immediate(*val, &dest)?;
@@ -575,7 +582,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let [left, right, index] = check_arg_count(args)?;
                 let (left, left_len) = this.operand_to_simd(left)?;
                 let (right, right_len) = this.operand_to_simd(right)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 // `index` is an array, not a SIMD type
                 let ty::Array(_, index_len) = index.layout.ty.kind() else {
@@ -604,9 +611,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                         let right_idx = src_index.checked_sub(left_len).unwrap();
                         this.read_immediate(&this.project_index(&right, right_idx)?)?
                     } else {
-                        span_bug!(
-                            this.cur_span(),
-                            "simd_shuffle index {src_index} is out of bounds for 2 vectors of size {left_len}",
+                        throw_ub_format!(
+                            "`simd_shuffle` index {src_index} is out-of-bounds for 2 vectors with length {dest_len}"
                         );
                     };
                     this.write_immediate(*val, &dest)?;
@@ -617,7 +623,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let (passthru, passthru_len) = this.operand_to_simd(passthru)?;
                 let (ptrs, ptrs_len) = this.operand_to_simd(ptrs)?;
                 let (mask, mask_len) = this.operand_to_simd(mask)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 assert_eq!(dest_len, passthru_len);
                 assert_eq!(dest_len, ptrs_len);
@@ -663,7 +669,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let (mask, mask_len) = this.operand_to_simd(mask)?;
                 let ptr = this.read_pointer(ptr)?;
                 let (default, default_len) = this.operand_to_simd(default)?;
-                let (dest, dest_len) = this.place_to_simd(dest)?;
+                let (dest, dest_len) = this.mplace_to_simd(dest)?;
 
                 assert_eq!(dest_len, mask_len);
                 assert_eq!(dest_len, default_len);
@@ -726,6 +732,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         let left = left.to_scalar();
         let right = right.to_scalar();
         Ok(match float_ty {
+            FloatTy::F16 => unimplemented!("f16_f128"),
             FloatTy::F32 => {
                 let left = left.to_f32()?;
                 let right = right.to_f32()?;
@@ -746,6 +753,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let res = this.adjust_nan(res, &[left, right]);
                 Scalar::from_f64(res)
             }
+            FloatTy::F128 => unimplemented!("f16_f128"),
         })
     }
 }

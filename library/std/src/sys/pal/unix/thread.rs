@@ -1,5 +1,5 @@
 use crate::cmp;
-use crate::ffi::CStr;
+use crate::ffi::{CStr, CString};
 use crate::io;
 use crate::mem;
 use crate::num::NonZero;
@@ -225,6 +225,44 @@ impl Thread {
         // Newlib, Emscripten, and VxWorks have no way to set a thread name.
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn get_name() -> Option<CString> {
+        const TASK_COMM_LEN: usize = 16;
+        let mut name = vec![0u8; TASK_COMM_LEN];
+        let res = unsafe {
+            libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr().cast(), name.len())
+        };
+        if res != 0 {
+            return None;
+        }
+        name.truncate(name.iter().position(|&c| c == 0)?);
+        CString::new(name).ok()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos"))]
+    pub fn get_name() -> Option<CString> {
+        let mut name = vec![0u8; libc::MAXTHREADNAMESIZE];
+        let res = unsafe {
+            libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr().cast(), name.len())
+        };
+        if res != 0 {
+            return None;
+        }
+        name.truncate(name.iter().position(|&c| c == 0)?);
+        CString::new(name).ok()
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos"
+    )))]
+    pub fn get_name() -> Option<CString> {
+        None
+    }
+
     #[cfg(not(target_os = "espidf"))]
     pub fn sleep(dur: Duration) {
         let mut secs = dur.as_secs();
@@ -239,7 +277,7 @@ impl Thread {
                     tv_nsec: nsecs,
                 };
                 secs -= ts.tv_sec as u64;
-                let ts_ptr = &mut ts as *mut _;
+                let ts_ptr = core::ptr::addr_of_mut!(ts);
                 if libc::nanosleep(ts_ptr, ts_ptr) == -1 {
                     assert_eq!(os::errno(), libc::EINTR);
                     secs += ts.tv_sec as u64;
@@ -418,8 +456,8 @@ pub fn available_parallelism() -> io::Result<NonZero<usize>> {
                     libc::sysctl(
                         mib.as_mut_ptr(),
                         2,
-                        &mut cpus as *mut _ as *mut _,
-                        &mut cpus_size as *mut _ as *mut _,
+                        core::ptr::addr_of_mut!(cpus) as *mut _,
+                        core::ptr::addr_of_mut!(cpus_size) as *mut _,
                         ptr::null_mut(),
                         0,
                     )
@@ -864,7 +902,7 @@ pub mod guard {
                         .unwrap();
                         match sysctlbyname.get() {
                             Some(fcn) => {
-                                if fcn(oid.as_ptr(), &mut guard as *mut _ as *mut _, &mut size as *mut _ as *mut _, crate::ptr::null_mut(), 0) == 0 {
+                                if fcn(oid.as_ptr(), core::ptr::addr_of_mut!(guard) as *mut _, core::ptr::addr_of_mut!(size) as *mut _, crate::ptr::null_mut(), 0) == 0 {
                                     return guard;
                                 }
                                 return 1;

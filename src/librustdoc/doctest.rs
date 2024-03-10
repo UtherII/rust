@@ -1,6 +1,7 @@
 use rustc_ast as ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::sync::Lrc;
+use rustc_errors::emitter::stderr_destination;
 use rustc_errors::{ColorConfig, ErrorGuaranteed, FatalError};
 use rustc_hir::def_id::{LocalDefId, CRATE_DEF_ID, LOCAL_CRATE};
 use rustc_hir::{self as hir, intravisit, CRATE_HIR_ID};
@@ -101,7 +102,7 @@ pub(crate) fn run(options: RustdocOptions) -> Result<(), ErrorGuaranteed> {
         file_loader: None,
         locale_resources: rustc_driver::DEFAULT_LOCALE_RESOURCES,
         lint_caps,
-        parse_sess_created: None,
+        psess_created: None,
         hash_untracked_state: None,
         register_lints: Some(Box::new(crate::lint::register_lints)),
         override_queries: None,
@@ -130,7 +131,7 @@ pub(crate) fn run(options: RustdocOptions) -> Result<(), ErrorGuaranteed> {
                         options,
                         false,
                         opts,
-                        Some(compiler.sess.parse_sess.clone_source_map()),
+                        Some(compiler.sess.psess.clone_source_map()),
                         None,
                         enable_per_target_ignores,
                     );
@@ -153,8 +154,7 @@ pub(crate) fn run(options: RustdocOptions) -> Result<(), ErrorGuaranteed> {
 
                     collector
                 });
-                // We must include lint errors here.
-                if compiler.sess.dcx().has_errors_or_lint_errors().is_some() {
+                if compiler.sess.dcx().has_errors().is_some() {
                     FatalError.raise();
                 }
 
@@ -577,21 +577,21 @@ pub(crate) fn make_test(
                 rustc_driver::DEFAULT_LOCALE_RESOURCES.to_vec(),
                 false,
             );
-            supports_color = HumanEmitter::stderr(ColorConfig::Auto, fallback_bundle.clone())
-                .diagnostic_width(Some(80))
-                .supports_color();
+            supports_color =
+                HumanEmitter::new(stderr_destination(ColorConfig::Auto), fallback_bundle.clone())
+                    .supports_color();
 
             let emitter = HumanEmitter::new(Box::new(io::sink()), fallback_bundle);
 
             // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
-            let dcx = DiagCtxt::with_emitter(Box::new(emitter)).disable_warnings();
-            let sess = ParseSess::with_dcx(dcx, sm);
+            let dcx = DiagCtxt::new(Box::new(emitter)).disable_warnings();
+            let psess = ParseSess::with_dcx(dcx, sm);
 
             let mut found_main = false;
             let mut found_extern_crate = crate_name.is_none();
             let mut found_macro = false;
 
-            let mut parser = match maybe_new_parser_from_source_str(&sess, filename, source) {
+            let mut parser = match maybe_new_parser_from_source_str(&psess, filename, source) {
                 Ok(p) => p,
                 Err(errs) => {
                     errs.into_iter().for_each(|err| err.cancel());
@@ -644,9 +644,9 @@ pub(crate) fn make_test(
 
             // Reset errors so that they won't be reported as compiler bugs when dropping the
             // dcx. Any errors in the tests will be reported when the test file is compiled,
-            // Note that we still need to cancel the errors above otherwise `DiagnosticBuilder`
-            // will panic on drop.
-            sess.dcx.reset_err_count();
+            // Note that we still need to cancel the errors above otherwise `Diag` will panic on
+            // drop.
+            psess.dcx.reset_err_count();
 
             (found_main, found_extern_crate, found_macro)
         })
@@ -769,10 +769,10 @@ fn check_if_attr_is_complete(source: &str, edition: Edition) -> bool {
 
             let emitter = HumanEmitter::new(Box::new(io::sink()), fallback_bundle);
 
-            let dcx = DiagCtxt::with_emitter(Box::new(emitter)).disable_warnings();
-            let sess = ParseSess::with_dcx(dcx, sm);
+            let dcx = DiagCtxt::new(Box::new(emitter)).disable_warnings();
+            let psess = ParseSess::with_dcx(dcx, sm);
             let mut parser =
-                match maybe_new_parser_from_source_str(&sess, filename, source.to_owned()) {
+                match maybe_new_parser_from_source_str(&psess, filename, source.to_owned()) {
                     Ok(p) => p,
                     Err(errs) => {
                         errs.into_iter().for_each(|err| err.cancel());
@@ -1208,6 +1208,13 @@ impl Tester for Collector {
     }
 }
 
+#[cfg(test)] // used in tests
+impl Tester for Vec<usize> {
+    fn add_test(&mut self, _test: String, _config: LangString, line: usize) {
+        self.push(line);
+    }
+}
+
 struct HirCollector<'a, 'hir, 'tcx> {
     sess: &'a Session,
     collector: &'a mut Collector,
@@ -1226,7 +1233,7 @@ impl<'a, 'hir, 'tcx> HirCollector<'a, 'hir, 'tcx> {
     ) {
         let ast_attrs = self.tcx.hir().attrs(self.tcx.local_def_id_to_hir_id(def_id));
         if let Some(ref cfg) = ast_attrs.cfg(self.tcx, &FxHashSet::default()) {
-            if !cfg.matches(&self.sess.parse_sess, Some(self.tcx.features())) {
+            if !cfg.matches(&self.sess.psess, Some(self.tcx.features())) {
                 return;
             }
         }

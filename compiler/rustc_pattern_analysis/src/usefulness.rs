@@ -716,7 +716,7 @@ use std::fmt;
 
 use crate::constructor::{Constructor, ConstructorSet, IntRange};
 use crate::pat::{DeconstructedPat, PatId, PatOrWild, WitnessPat};
-use crate::{Captures, MatchArm, TypeCx};
+use crate::{Captures, MatchArm, PrivateUninhabitedField, TypeCx};
 
 use self::ValidityConstraint::*;
 
@@ -734,6 +734,21 @@ struct UsefulnessCtxt<'a, Cx: TypeCx> {
     /// Collect the patterns found useful during usefulness checking. This is used to lint
     /// unreachable (sub)patterns.
     useful_subpatterns: FxHashSet<PatId>,
+    complexity_limit: Option<usize>,
+    complexity_level: usize,
+}
+
+impl<'a, Cx: TypeCx> UsefulnessCtxt<'a, Cx> {
+    fn increase_complexity_level(&mut self, complexity_add: usize) -> Result<(), Cx::Error> {
+        self.complexity_level += complexity_add;
+        if self
+            .complexity_limit
+            .is_some_and(|complexity_limit| complexity_limit < self.complexity_level)
+        {
+            return self.tycx.complexity_exceeded();
+        }
+        Ok(())
+    }
 }
 
 /// Context that provides information local to a place under investigation.
@@ -817,6 +832,9 @@ impl fmt::Display for ValidityConstraint {
 struct PlaceInfo<Cx: TypeCx> {
     /// The type of the place.
     ty: Cx::Ty,
+    /// Whether the place is a private uninhabited field. If so we skip this field during analysis
+    /// so that we don't observe its emptiness.
+    private_uninhabited: bool,
     /// Whether the place is known to contain valid data.
     validity: ValidityConstraint,
     /// Whether the place is the scrutinee itself or a subplace of it.
@@ -833,8 +851,9 @@ impl<Cx: TypeCx> PlaceInfo<Cx> {
     ) -> impl Iterator<Item = Self> + ExactSizeIterator + Captures<'a> {
         let ctor_sub_tys = cx.ctor_sub_tys(ctor, &self.ty);
         let ctor_sub_validity = self.validity.specialize(ctor);
-        ctor_sub_tys.map(move |ty| PlaceInfo {
+        ctor_sub_tys.map(move |(ty, PrivateUninhabitedField(private_uninhabited))| PlaceInfo {
             ty,
+            private_uninhabited,
             validity: ctor_sub_validity,
             is_scrutinee: false,
         })
@@ -856,6 +875,11 @@ impl<Cx: TypeCx> PlaceInfo<Cx> {
     where
         Cx: 'a,
     {
+        if self.private_uninhabited {
+            // Skip the whole column
+            return Ok((smallvec![Constructor::PrivateUninhabited], vec![]));
+        }
+
         let ctors_for_ty = cx.ctors_for_ty(&self.ty)?;
 
         // We treat match scrutinees of type `!` or `EmptyEnum` differently.
@@ -914,7 +938,12 @@ impl<Cx: TypeCx> PlaceInfo<Cx> {
 
 impl<Cx: TypeCx> Clone for PlaceInfo<Cx> {
     fn clone(&self) -> Self {
-        Self { ty: self.ty.clone(), validity: self.validity, is_scrutinee: self.is_scrutinee }
+        Self {
+            ty: self.ty.clone(),
+            private_uninhabited: self.private_uninhabited,
+            validity: self.validity,
+            is_scrutinee: self.is_scrutinee,
+        }
     }
 }
 
@@ -972,19 +1001,26 @@ impl<'p, Cx: TypeCx> PatStack<'p, Cx> {
     /// Only call if `ctor.is_covered_by(self.head().ctor())` is true.
     fn pop_head_constructor(
         &self,
+        cx: &Cx,
         ctor: &Constructor<Cx>,
         ctor_arity: usize,
         ctor_is_relevant: bool,
-    ) -> PatStack<'p, Cx> {
+    ) -> Result<PatStack<'p, Cx>, Cx::Error> {
         // We pop the head pattern and push the new fields extracted from the arguments of
         // `self.head()`.
         let mut new_pats = self.head().specialize(ctor, ctor_arity);
+        if new_pats.len() != ctor_arity {
+            return Err(cx.bug(format_args!(
+                "uncaught type error: pattern {:?} has inconsistent arity (expected arity {ctor_arity})",
+                self.head().as_pat().unwrap()
+            )));
+        }
         new_pats.extend_from_slice(&self.pats[1..]);
         // `ctor` is relevant for this row if it is the actual constructor of this row, or if the
         // row has a wildcard and `ctor` is relevant for wildcards.
         let ctor_is_relevant =
             !matches!(self.head().ctor(), Constructor::Wildcard) || ctor_is_relevant;
-        PatStack { pats: new_pats, relevant: self.relevant && ctor_is_relevant }
+        Ok(PatStack { pats: new_pats, relevant: self.relevant && ctor_is_relevant })
     }
 }
 
@@ -1054,18 +1090,19 @@ impl<'p, Cx: TypeCx> MatrixRow<'p, Cx> {
     /// Only call if `ctor.is_covered_by(self.head().ctor())` is true.
     fn pop_head_constructor(
         &self,
+        cx: &Cx,
         ctor: &Constructor<Cx>,
         ctor_arity: usize,
         ctor_is_relevant: bool,
         parent_row: usize,
-    ) -> MatrixRow<'p, Cx> {
-        MatrixRow {
-            pats: self.pats.pop_head_constructor(ctor, ctor_arity, ctor_is_relevant),
+    ) -> Result<MatrixRow<'p, Cx>, Cx::Error> {
+        Ok(MatrixRow {
+            pats: self.pats.pop_head_constructor(cx, ctor, ctor_arity, ctor_is_relevant)?,
             parent_row,
             is_under_guard: self.is_under_guard,
             useful: false,
             intersects: BitSet::new_empty(0), // Initialized in `Matrix::expand_and_push`.
-        }
+        })
     }
 }
 
@@ -1121,7 +1158,12 @@ impl<'p, Cx: TypeCx> Matrix<'p, Cx> {
         scrut_ty: Cx::Ty,
         scrut_validity: ValidityConstraint,
     ) -> Self {
-        let place_info = PlaceInfo { ty: scrut_ty, validity: scrut_validity, is_scrutinee: true };
+        let place_info = PlaceInfo {
+            ty: scrut_ty,
+            private_uninhabited: false,
+            validity: scrut_validity,
+            is_scrutinee: true,
+        };
         let mut matrix = Matrix {
             rows: Vec::with_capacity(arms.len()),
             place_info: smallvec![place_info],
@@ -1183,11 +1225,30 @@ impl<'p, Cx: TypeCx> Matrix<'p, Cx> {
         };
         for (i, row) in self.rows().enumerate() {
             if ctor.is_covered_by(pcx.cx, row.head().ctor())? {
-                let new_row = row.pop_head_constructor(ctor, arity, ctor_is_relevant, i);
+                let new_row = row.pop_head_constructor(pcx.cx, ctor, arity, ctor_is_relevant, i)?;
                 matrix.expand_and_push(new_row);
             }
         }
         Ok(matrix)
+    }
+
+    /// Recover row usefulness and intersection information from a processed specialized matrix.
+    /// `specialized` must come from `self.specialize_constructor`.
+    fn unspecialize(&mut self, specialized: Self) {
+        for child_row in specialized.rows() {
+            let parent_row_id = child_row.parent_row;
+            let parent_row = &mut self.rows[parent_row_id];
+            // A parent row is useful if any of its children is.
+            parent_row.useful |= child_row.useful;
+            for child_intersection in child_row.intersects.iter() {
+                // Convert the intersecting ids into ids for the parent matrix.
+                let parent_intersection = specialized.rows[child_intersection].parent_row;
+                // Note: self-intersection can happen with or-patterns.
+                if parent_intersection != parent_row_id {
+                    parent_row.intersects.insert(parent_intersection);
+                }
+            }
+        }
     }
 }
 
@@ -1428,7 +1489,7 @@ impl<Cx: TypeCx> WitnessMatrix<Cx> {
 /// We can however get false negatives because exhaustiveness does not explore all cases. See the
 /// section on relevancy at the top of the file.
 fn collect_overlapping_range_endpoints<'p, Cx: TypeCx>(
-    mcx: &mut UsefulnessCtxt<'_, Cx>,
+    cx: &Cx,
     overlap_range: IntRange,
     matrix: &Matrix<'p, Cx>,
     specialized_matrix: &Matrix<'p, Cx>,
@@ -1461,11 +1522,11 @@ fn collect_overlapping_range_endpoints<'p, Cx: TypeCx>(
                     .map(|&(_, pat)| pat)
                     .collect();
                 if !overlaps_with.is_empty() {
-                    mcx.tycx.lint_overlapping_range_endpoints(pat, overlap_range, &overlaps_with);
+                    cx.lint_overlapping_range_endpoints(pat, overlap_range, &overlaps_with);
                 }
             }
             suffixes.push((child_row_id, pat))
-        } else if this_range.hi == overlap.plus_one() {
+        } else if Some(this_range.hi) == overlap.plus_one() {
             // `this_range` looks like `this_range.lo..=overlap`; it overlaps with any
             // ranges that look like `overlap..=hi`.
             if !suffixes.is_empty() {
@@ -1477,11 +1538,38 @@ fn collect_overlapping_range_endpoints<'p, Cx: TypeCx>(
                     .map(|&(_, pat)| pat)
                     .collect();
                 if !overlaps_with.is_empty() {
-                    mcx.tycx.lint_overlapping_range_endpoints(pat, overlap_range, &overlaps_with);
+                    cx.lint_overlapping_range_endpoints(pat, overlap_range, &overlaps_with);
                 }
             }
             prefixes.push((child_row_id, pat))
         }
+    }
+}
+
+/// Collect ranges that have a singleton gap between them.
+fn collect_non_contiguous_range_endpoints<'p, Cx: TypeCx>(
+    cx: &Cx,
+    gap_range: &IntRange,
+    matrix: &Matrix<'p, Cx>,
+) {
+    let gap = gap_range.lo;
+    // Ranges that look like `lo..gap`.
+    let mut onebefore: SmallVec<[_; 1]> = Default::default();
+    // Ranges that start on `gap+1` or singletons `gap+1`.
+    let mut oneafter: SmallVec<[_; 1]> = Default::default();
+    // Look through the column for ranges near the gap.
+    for pat in matrix.heads() {
+        let PatOrWild::Pat(pat) = pat else { continue };
+        let Constructor::IntRange(this_range) = pat.ctor() else { continue };
+        if gap == this_range.hi {
+            onebefore.push(pat)
+        } else if gap.plus_one() == Some(this_range.lo) {
+            oneafter.push(pat)
+        }
+    }
+
+    for pat_before in onebefore {
+        cx.lint_non_contiguous_range_endpoints(pat_before, *gap_range, oneafter.as_slice());
     }
 }
 
@@ -1514,6 +1602,7 @@ fn compute_exhaustiveness_and_usefulness<'a, 'p, Cx: TypeCx>(
     }
 
     let Some(place) = matrix.head_place() else {
+        mcx.increase_complexity_level(matrix.rows().len())?;
         // The base case: there are no columns in the matrix. We are morally pattern-matching on ().
         // A row is useful iff it has no (unguarded) rows above it.
         let mut useful = true; // Whether the next row is useful.
@@ -1558,28 +1647,26 @@ fn compute_exhaustiveness_and_usefulness<'a, 'p, Cx: TypeCx>(
         // Accumulate the found witnesses.
         ret.extend(witnesses);
 
-        for child_row in spec_matrix.rows() {
-            let parent_row_id = child_row.parent_row;
-            let parent_row = &mut matrix.rows[parent_row_id];
-            // A parent row is useful if any of its children is.
-            parent_row.useful |= child_row.useful;
-            for child_intersection in child_row.intersects.iter() {
-                // Convert the intersecting ids into ids for the parent matrix.
-                let parent_intersection = spec_matrix.rows[child_intersection].parent_row;
-                // Note: self-intersection can happen with or-patterns.
-                if parent_intersection != parent_row_id {
-                    parent_row.intersects.insert(parent_intersection);
-                }
-            }
-        }
-
         // Detect ranges that overlap on their endpoints.
         if let Constructor::IntRange(overlap_range) = ctor {
             if overlap_range.is_singleton()
                 && spec_matrix.rows.len() >= 2
                 && spec_matrix.rows.iter().any(|row| !row.intersects.is_empty())
             {
-                collect_overlapping_range_endpoints(mcx, overlap_range, matrix, &spec_matrix);
+                collect_overlapping_range_endpoints(mcx.tycx, overlap_range, matrix, &spec_matrix);
+            }
+        }
+
+        matrix.unspecialize(spec_matrix);
+    }
+
+    // Detect singleton gaps between ranges.
+    if missing_ctors.iter().any(|c| matches!(c, Constructor::IntRange(..))) {
+        for missing in &missing_ctors {
+            if let Constructor::IntRange(gap) = missing {
+                if gap.is_singleton() {
+                    collect_non_contiguous_range_endpoints(mcx.tycx, gap, matrix);
+                }
             }
         }
     }
@@ -1665,8 +1752,14 @@ pub fn compute_match_usefulness<'p, Cx: TypeCx>(
     arms: &[MatchArm<'p, Cx>],
     scrut_ty: Cx::Ty,
     scrut_validity: ValidityConstraint,
+    complexity_limit: Option<usize>,
 ) -> Result<UsefulnessReport<'p, Cx>, Cx::Error> {
-    let mut cx = UsefulnessCtxt { tycx, useful_subpatterns: FxHashSet::default() };
+    let mut cx = UsefulnessCtxt {
+        tycx,
+        useful_subpatterns: FxHashSet::default(),
+        complexity_limit,
+        complexity_level: 0,
+    };
     let mut matrix = Matrix::new(arms, scrut_ty, scrut_validity);
     let non_exhaustiveness_witnesses = compute_exhaustiveness_and_usefulness(&mut cx, &mut matrix)?;
 

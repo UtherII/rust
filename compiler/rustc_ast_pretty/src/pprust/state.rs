@@ -14,7 +14,7 @@ use rustc_ast::ptr::P;
 use rustc_ast::token::{self, BinOpToken, CommentKind, Delimiter, Nonterminal, Token, TokenKind};
 use rustc_ast::tokenstream::{Spacing, TokenStream, TokenTree};
 use rustc_ast::util::classify;
-use rustc_ast::util::comments::{gather_comments, Comment, CommentStyle};
+use rustc_ast::util::comments::{Comment, CommentStyle};
 use rustc_ast::util::parser;
 use rustc_ast::{self as ast, AttrArgs, AttrArgsEq, BlockCheckMode, PatKind};
 use rustc_ast::{attr, BindingAnnotation, ByRef, DelimArgs, RangeEnd, RangeSyntax, Term};
@@ -24,7 +24,7 @@ use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 use rustc_span::edition::Edition;
 use rustc_span::source_map::{SourceMap, Spanned};
 use rustc_span::symbol::{kw, sym, Ident, IdentPrinter, Symbol};
-use rustc_span::{BytePos, FileName, Span, DUMMY_SP};
+use rustc_span::{BytePos, CharPos, FileName, Pos, Span, DUMMY_SP};
 use std::borrow::Cow;
 use thin_vec::ThinVec;
 
@@ -57,6 +57,127 @@ pub struct Comments<'a> {
     sm: &'a SourceMap,
     comments: Vec<Comment>,
     current: usize,
+}
+
+/// Returns `None` if the first `col` chars of `s` contain a non-whitespace char.
+/// Otherwise returns `Some(k)` where `k` is first char offset after that leading
+/// whitespace. Note that `k` may be outside bounds of `s`.
+fn all_whitespace(s: &str, col: CharPos) -> Option<usize> {
+    let mut idx = 0;
+    for (i, ch) in s.char_indices().take(col.to_usize()) {
+        if !ch.is_whitespace() {
+            return None;
+        }
+        idx = i + ch.len_utf8();
+    }
+    Some(idx)
+}
+
+fn trim_whitespace_prefix(s: &str, col: CharPos) -> &str {
+    let len = s.len();
+    match all_whitespace(s, col) {
+        Some(col) => {
+            if col < len {
+                &s[col..]
+            } else {
+                ""
+            }
+        }
+        None => s,
+    }
+}
+
+fn split_block_comment_into_lines(text: &str, col: CharPos) -> Vec<String> {
+    let mut res: Vec<String> = vec![];
+    let mut lines = text.lines();
+    // just push the first line
+    res.extend(lines.next().map(|it| it.to_string()));
+    // for other lines, strip common whitespace prefix
+    for line in lines {
+        res.push(trim_whitespace_prefix(line, col).to_string())
+    }
+    res
+}
+
+fn gather_comments(sm: &SourceMap, path: FileName, src: String) -> Vec<Comment> {
+    let sm = SourceMap::new(sm.path_mapping().clone());
+    let source_file = sm.new_source_file(path, src);
+    let text = (*source_file.src.as_ref().unwrap()).clone();
+
+    let text: &str = text.as_str();
+    let start_bpos = source_file.start_pos;
+    let mut pos = 0;
+    let mut comments: Vec<Comment> = Vec::new();
+    let mut code_to_the_left = false;
+
+    if let Some(shebang_len) = rustc_lexer::strip_shebang(text) {
+        comments.push(Comment {
+            style: CommentStyle::Isolated,
+            lines: vec![text[..shebang_len].to_string()],
+            pos: start_bpos,
+        });
+        pos += shebang_len;
+    }
+
+    for token in rustc_lexer::tokenize(&text[pos..]) {
+        let token_text = &text[pos..pos + token.len as usize];
+        match token.kind {
+            rustc_lexer::TokenKind::Whitespace => {
+                if let Some(mut idx) = token_text.find('\n') {
+                    code_to_the_left = false;
+                    while let Some(next_newline) = &token_text[idx + 1..].find('\n') {
+                        idx += 1 + next_newline;
+                        comments.push(Comment {
+                            style: CommentStyle::BlankLine,
+                            lines: vec![],
+                            pos: start_bpos + BytePos((pos + idx) as u32),
+                        });
+                    }
+                }
+            }
+            rustc_lexer::TokenKind::BlockComment { doc_style, .. } => {
+                if doc_style.is_none() {
+                    let code_to_the_right = !matches!(
+                        text[pos + token.len as usize..].chars().next(),
+                        Some('\r' | '\n')
+                    );
+                    let style = match (code_to_the_left, code_to_the_right) {
+                        (_, true) => CommentStyle::Mixed,
+                        (false, false) => CommentStyle::Isolated,
+                        (true, false) => CommentStyle::Trailing,
+                    };
+
+                    // Count the number of chars since the start of the line by rescanning.
+                    let pos_in_file = start_bpos + BytePos(pos as u32);
+                    let line_begin_in_file = source_file.line_begin_pos(pos_in_file);
+                    let line_begin_pos = (line_begin_in_file - start_bpos).to_usize();
+                    let col = CharPos(text[line_begin_pos..pos].chars().count());
+
+                    let lines = split_block_comment_into_lines(token_text, col);
+                    comments.push(Comment { style, lines, pos: pos_in_file })
+                }
+            }
+            rustc_lexer::TokenKind::LineComment { doc_style } => {
+                if doc_style.is_none() {
+                    comments.push(Comment {
+                        style: if code_to_the_left {
+                            CommentStyle::Trailing
+                        } else {
+                            CommentStyle::Isolated
+                        },
+                        lines: vec![token_text.to_string()],
+                        pos: start_bpos + BytePos(pos as u32),
+                    })
+                }
+            }
+            _ => {
+                code_to_the_left = true;
+            }
+        }
+        pos += token.len as usize;
+    }
+
+    comments
 }
 
 impl<'a> Comments<'a> {
@@ -185,7 +306,7 @@ fn space_between(tt1: &TokenTree, tt2: &TokenTree) -> bool {
 
         // IDENT + `!`: `println!()`, but `if !x { ... }` needs a space after the `if`
         (Tok(Token { kind: Ident(sym, is_raw), span }, _), Tok(Token { kind: Not, .. }, _))
-            if !Ident::new(*sym, *span).is_reserved() || *is_raw =>
+            if !Ident::new(*sym, *span).is_reserved() || matches!(is_raw, IdentIsRaw::Yes) =>
         {
             false
         }
@@ -197,7 +318,7 @@ fn space_between(tt1: &TokenTree, tt2: &TokenTree) -> bool {
                 || *sym == kw::Fn
                 || *sym == kw::SelfUpper
                 || *sym == kw::Pub
-                || *is_raw =>
+                || matches!(is_raw, IdentIsRaw::Yes) =>
         {
             false
         }
@@ -731,7 +852,7 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
             token::NtBlock(e) => self.block_to_string(e),
             token::NtStmt(e) => self.stmt_to_string(e),
             token::NtPat(e) => self.pat_to_string(e),
-            token::NtIdent(e, is_raw) => IdentPrinter::for_ast_ident(*e, *is_raw).to_string(),
+            &token::NtIdent(e, is_raw) => IdentPrinter::for_ast_ident(e, is_raw.into()).to_string(),
             token::NtLifetime(e) => e.to_string(),
             token::NtLiteral(e) => self.expr_to_string(e),
             token::NtVis(e) => self.vis_to_string(e),
@@ -795,7 +916,7 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
 
             /* Name components */
             token::Ident(s, is_raw) => {
-                IdentPrinter::new(s, is_raw, convert_dollar_crate).to_string().into()
+                IdentPrinter::new(s, is_raw.into(), convert_dollar_crate).to_string().into()
             }
             token::Lifetime(s) => s.to_string().into(),
 
@@ -1330,6 +1451,10 @@ impl<'a> State<'a> {
                         } else {
                             s.print_path(&sym.path, true, 0);
                         }
+                    }
+                    InlineAsmOperand::Label { block } => {
+                        s.head("label");
+                        s.print_block(block);
                     }
                 }
             }

@@ -1,6 +1,9 @@
+use std::borrow::{Borrow, Cow};
+use std::cmp;
 use std::fmt::{self, Write};
+use std::iter;
+use std::ops::Bound;
 use std::ops::Deref;
-use std::{borrow::Borrow, cmp, iter, ops::Bound};
 
 use rustc_index::Idx;
 use tracing::debug;
@@ -32,7 +35,7 @@ where
 pub trait LayoutCalculator {
     type TargetDataLayoutRef: Borrow<TargetDataLayout>;
 
-    fn delayed_bug(&self, txt: String);
+    fn delayed_bug(&self, txt: impl Into<Cow<'static, str>>);
     fn current_data_layout(&self) -> Self::TargetDataLayoutRef;
 
     fn scalar_pair<FieldIdx: Idx, VariantIdx: Idx>(
@@ -958,7 +961,7 @@ fn univariant<
             #[cfg(feature = "randomize")]
             {
                 use rand::{seq::SliceRandom, SeedableRng};
-                // `ReprOptions.layout_seed` is a deterministic seed we can use to randomize field
+                // `ReprOptions.field_shuffle_seed` is a deterministic seed we can use to randomize field
                 // ordering.
                 let mut rng =
                     rand_xoshiro::Xoshiro128StarStar::seed_from_u64(repr.field_shuffle_seed);

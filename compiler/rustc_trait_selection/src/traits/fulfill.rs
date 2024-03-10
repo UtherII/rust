@@ -138,7 +138,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
         _infcx: &InferCtxt<'tcx>,
     ) -> Vec<FulfillmentError<'tcx>> {
         self.predicates
-            .to_errors(FulfillmentErrorCode::Ambiguity { overflow: false })
+            .to_errors(FulfillmentErrorCode::Ambiguity { overflow: None })
             .into_iter()
             .map(to_fulfillment_error)
             .collect()
@@ -450,12 +450,7 @@ impl<'a, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'tcx> {
                     .recursion_limit()
                     .value_within_limit(obligation.recursion_depth) =>
                 {
-                    self.selcx.infcx.err_ctxt().report_overflow_error(
-                        &obligation.predicate,
-                        obligation.cause.span,
-                        false,
-                        |_| {},
-                    );
+                    self.selcx.infcx.err_ctxt().report_overflow_obligation(&obligation, false);
                 }
 
                 ty::PredicateKind::Clause(ty::ClauseKind::WellFormed(arg)) => {

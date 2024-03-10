@@ -1,8 +1,6 @@
 use std::mem;
 
-use rustc_errors::{
-    DiagnosticArgName, DiagnosticArgValue, DiagnosticMessage, IntoDiagnostic, IntoDiagnosticArg,
-};
+use rustc_errors::{DiagArgName, DiagArgValue, DiagMessage, IntoDiagnostic, IntoDiagnosticArg};
 use rustc_hir::CRATE_HIR_ID;
 use rustc_middle::mir::AssertKind;
 use rustc_middle::query::TyCtxtAt;
@@ -25,7 +23,7 @@ pub enum ConstEvalErrKind {
 }
 
 impl MachineStopType for ConstEvalErrKind {
-    fn diagnostic_message(&self) -> DiagnosticMessage {
+    fn diagnostic_message(&self) -> DiagMessage {
         use crate::fluent_generated::*;
         use ConstEvalErrKind::*;
         match self {
@@ -36,7 +34,7 @@ impl MachineStopType for ConstEvalErrKind {
             AssertFailure(x) => x.diagnostic_message(),
         }
     }
-    fn add_args(self: Box<Self>, adder: &mut dyn FnMut(DiagnosticArgName, DiagnosticArgValue)) {
+    fn add_args(self: Box<Self>, adder: &mut dyn FnMut(DiagArgName, DiagArgValue)) {
         use ConstEvalErrKind::*;
         match *self {
             RecursiveStatic | ConstAccessesMutGlobal | ModifiedGlobal => {}

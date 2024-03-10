@@ -1697,6 +1697,18 @@ fn test_reserve_exact() {
 #[test]
 #[cfg_attr(miri, ignore)] // Miri does not support signalling OOM
 #[cfg_attr(target_os = "android", ignore)] // Android used in CI has a broken dlmalloc
+fn test_try_with_capacity() {
+    let mut vec: Vec<u32> = Vec::try_with_capacity(5).unwrap();
+    assert_eq!(0, vec.len());
+    assert!(vec.capacity() >= 5 && vec.capacity() <= isize::MAX as usize / 4);
+    assert!(vec.spare_capacity_mut().len() >= 5);
+
+    assert!(Vec::<u16>::try_with_capacity(isize::MAX as usize + 1).is_err());
+}
+
+#[test]
+#[cfg_attr(miri, ignore)] // Miri does not support signalling OOM
+#[cfg_attr(target_os = "android", ignore)] // Android used in CI has a broken dlmalloc
 fn test_try_reserve() {
     // These are the interesting cases:
     // * exactly isize::MAX should never trigger a CapacityOverflow (can be OOM)
@@ -2575,7 +2587,7 @@ fn test_box_zero_allocator() {
                 assert!(state.0.insert(addr));
                 state.1 += 1;
                 std::println!("allocating {addr}");
-                std::ptr::invalid_mut(addr)
+                std::ptr::without_provenance_mut(addr)
             } else {
                 unsafe { std::alloc::alloc(layout) }
             };

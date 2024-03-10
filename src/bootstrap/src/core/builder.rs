@@ -19,7 +19,7 @@ use crate::core::build_steps::{check, clean, compile, dist, doc, install, run, s
 use crate::core::config::flags::{Color, Subcommand};
 use crate::core::config::{DryRun, SplitDebuginfo, TargetSelection};
 use crate::prepare_behaviour_dump_dir;
-use crate::utils::cache::{Cache, Interned, INTERNER};
+use crate::utils::cache::Cache;
 use crate::utils::helpers::{self, add_dylib_path, add_link_lib_path, exe, linker_args};
 use crate::utils::helpers::{check_cfg_arg, libdir, linker_flags, output, t, LldThreads};
 use crate::EXTRA_CHECK_CFGS;
@@ -102,7 +102,7 @@ impl RunConfig<'_> {
 
     /// Return a list of crate names selected by `run.paths`.
     #[track_caller]
-    pub fn cargo_crates_in_set(&self) -> Interned<Vec<String>> {
+    pub fn cargo_crates_in_set(&self) -> Vec<String> {
         let mut crates = Vec::new();
         for krate in &self.paths {
             let path = krate.assert_single_path();
@@ -111,7 +111,7 @@ impl RunConfig<'_> {
             };
             crates.push(crate_name.to_string());
         }
-        INTERNER.intern_list(crates)
+        crates
     }
 
     /// Given an `alias` selected by the `Step` and the paths passed on the command line,
@@ -120,7 +120,7 @@ impl RunConfig<'_> {
     /// Normally, people will pass *just* `library` if they pass it.
     /// But it's possible (although strange) to pass something like `library std core`.
     /// Build all crates anyway, as if they hadn't passed the other args.
-    pub fn make_run_crates(&self, alias: Alias) -> Interned<Vec<String>> {
+    pub fn make_run_crates(&self, alias: Alias) -> Vec<String> {
         let has_alias =
             self.paths.iter().any(|set| set.assert_single_path().path.ends_with(alias.as_str()));
         if !has_alias {
@@ -133,7 +133,7 @@ impl RunConfig<'_> {
         };
 
         let crate_names = crates.into_iter().map(|krate| krate.name.to_string()).collect();
-        INTERNER.intern_list(crate_names)
+        crate_names
     }
 }
 
@@ -288,16 +288,61 @@ impl PathSet {
     }
 }
 
-const PATH_REMAP: &[(&str, &str)] = &[("rust-analyzer-proc-macro-srv", "proc-macro-srv-cli")];
+const PATH_REMAP: &[(&str, &[&str])] = &[
+    // config.toml uses `rust-analyzer-proc-macro-srv`, but the
+    // actual path is `proc-macro-srv-cli`
+    ("rust-analyzer-proc-macro-srv", &["proc-macro-srv-cli"]),
+    // Make `x test tests` function the same as `x t tests/*`
+    (
+        "tests",
+        &[
+            "tests/assembly",
+            "tests/codegen",
+            "tests/codegen-units",
+            "tests/coverage",
+            "tests/coverage-run-rustdoc",
+            "tests/debuginfo",
+            "tests/incremental",
+            "tests/mir-opt",
+            "tests/pretty",
+            "tests/run-make",
+            "tests/run-make-fulldeps",
+            "tests/run-pass-valgrind",
+            "tests/rustdoc",
+            "tests/rustdoc-gui",
+            "tests/rustdoc-js",
+            "tests/rustdoc-js-std",
+            "tests/rustdoc-json",
+            "tests/rustdoc-ui",
+            "tests/ui",
+            "tests/ui-fulldeps",
+        ],
+    ),
+];
 
-fn remap_paths(paths: &mut [&Path]) {
-    for path in paths.iter_mut() {
+fn remap_paths(paths: &mut Vec<&Path>) {
+    let mut remove = vec![];
+    let mut add = vec![];
+    for (i, path) in paths
+        .iter()
+        .enumerate()
+        .filter_map(|(i, path)| if let Some(s) = path.to_str() { Some((i, s)) } else { None })
+    {
         for &(search, replace) in PATH_REMAP {
-            if path.to_str() == Some(search) {
-                *path = Path::new(replace)
+            // Remove leading and trailing slashes so `tests/` and `tests` are equivalent
+            if path.trim_matches(std::path::is_separator) == search {
+                remove.push(i);
+                add.extend(replace.into_iter().map(Path::new));
+                break;
             }
         }
     }
+    remove.sort();
+    remove.dedup();
+    for idx in remove.into_iter().rev() {
+        paths.remove(idx);
+    }
+    paths.append(&mut add);
 }
 
 impl StepDescription {
@@ -597,22 +642,22 @@ impl<'a> ShouldRun<'a> {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Kind {
-    #[clap(alias = "b")]
+    #[value(alias = "b")]
     Build,
-    #[clap(alias = "c")]
+    #[value(alias = "c")]
     Check,
     Clippy,
     Fix,
     Format,
-    #[clap(alias = "t")]
+    #[value(alias = "t")]
     Test,
     Bench,
-    #[clap(alias = "d")]
+    #[value(alias = "d")]
     Doc,
     Clean,
     Dist,
     Install,
-    #[clap(alias = "r")]
+    #[value(alias = "r")]
     Run,
     Setup,
     Suggest,
@@ -1017,26 +1062,26 @@ impl<'a> Builder<'a> {
         }
     }
 
-    pub fn sysroot(&self, compiler: Compiler) -> Interned<PathBuf> {
+    pub fn sysroot(&self, compiler: Compiler) -> PathBuf {
         self.ensure(compile::Sysroot::new(compiler))
     }
 
     /// Returns the libdir where the standard library and other artifacts are
     /// found for a compiler's sysroot.
-    pub fn sysroot_libdir(&self, compiler: Compiler, target: TargetSelection) -> Interned<PathBuf> {
-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+    pub fn sysroot_libdir(&self, compiler: Compiler, target: TargetSelection) -> PathBuf {
+        #[derive(Debug, Clone, Hash, PartialEq, Eq)]
         struct Libdir {
             compiler: Compiler,
             target: TargetSelection,
         }
         impl Step for Libdir {
-            type Output = Interned<PathBuf>;
+            type Output = PathBuf;
 
             fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
                 run.never()
             }
 
-            fn run(self, builder: &Builder<'_>) -> Interned<PathBuf> {
+            fn run(self, builder: &Builder<'_>) -> PathBuf {
                 let lib = builder.sysroot_libdir_relative(self.compiler);
                 let sysroot = builder
                     .sysroot(self.compiler)
@@ -1065,7 +1110,7 @@ impl<'a> Builder<'a> {
                     );
                 }
 
-                INTERNER.intern_path(sysroot)
+                sysroot
             }
         }
         self.ensure(Libdir { compiler, target })

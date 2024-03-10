@@ -2460,6 +2460,7 @@ impl PrimTy {
         Self::Uint(UintTy::Usize),
         Self::Float(FloatTy::F32),
         Self::Float(FloatTy::F64),
+        // FIXME(f16_f128): add these when enabled below
         Self::Bool,
         Self::Char,
         Self::Str,
@@ -2509,6 +2510,10 @@ impl PrimTy {
             sym::usize => Self::Uint(UintTy::Usize),
             sym::f32 => Self::Float(FloatTy::F32),
             sym::f64 => Self::Float(FloatTy::F64),
+            // FIXME(f16_f128): enabling these will open the gates of f16 and f128 being
+            // understood by rustc.
+            // sym::f16 => Self::Float(FloatTy::F16),
+            // sym::f128 => Self::Float(FloatTy::F128),
             sym::bool => Self::Bool,
             sym::char => Self::Char,
             sym::str => Self::Str,
@@ -2557,6 +2562,8 @@ pub enum OpaqueTyOrigin {
     AsyncFn(LocalDefId),
     /// type aliases: `type Foo = impl Trait;`
     TyAlias {
+        /// The type alias or associated type parent of the TAIT/ATPIT
+        parent: LocalDefId,
         /// associated types in impl blocks for traits.
         in_assoc_ty: bool,
     },
@@ -2645,6 +2652,9 @@ pub enum InlineAsmOperand<'hir> {
         path: QPath<'hir>,
         def_id: DefId,
     },
+    Label {
+        block: &'hir Block<'hir>,
+    },
 }
 
 impl<'hir> InlineAsmOperand<'hir> {
@@ -2654,7 +2664,10 @@ impl<'hir> InlineAsmOperand<'hir> {
             | Self::Out { reg, .. }
             | Self::InOut { reg, .. }
             | Self::SplitInOut { reg, .. } => Some(reg),
-            Self::Const { .. } | Self::SymFn { .. } | Self::SymStatic { .. } => None,
+            Self::Const { .. }
+            | Self::SymFn { .. }
+            | Self::SymStatic { .. }
+            | Self::Label { .. } => None,
         }
     }
 
@@ -2673,6 +2686,12 @@ pub struct InlineAsm<'hir> {
     pub operands: &'hir [(InlineAsmOperand<'hir>, Span)],
     pub options: InlineAsmOptions,
     pub line_spans: &'hir [Span],
+}
+
+impl InlineAsm<'_> {
+    pub fn contains_label(&self) -> bool {
+        self.operands.iter().any(|x| matches!(x.0, InlineAsmOperand::Label { .. }))
+    }
 }
 
 /// Represents a parameter in a function header.
@@ -3002,6 +3021,11 @@ impl<'hir> Item<'hir> {
     /// [`ItemKind::Union`].
     pub fn is_adt(&self) -> bool {
         matches!(self.kind, ItemKind::Enum(..) | ItemKind::Struct(..) | ItemKind::Union(..))
+    }
+
+    /// Check if this is an [`ItemKind::Struct`] or [`ItemKind::Union`].
+    pub fn is_struct_or_union(&self) -> bool {
+        matches!(self.kind, ItemKind::Struct(..) | ItemKind::Union(..))
     }
 
     expect_methods_self_kind! {

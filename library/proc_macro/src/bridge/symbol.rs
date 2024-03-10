@@ -109,18 +109,18 @@ impl<S> Encode<S> for Symbol {
     }
 }
 
-impl<S: server::Server> DecodeMut<'_, '_, client::HandleStore<server::MarkedTypes<S>>>
+impl<S: server::Server> DecodeMut<'_, '_, server::HandleStore<server::MarkedTypes<S>>>
     for Marked<S::Symbol, Symbol>
 {
-    fn decode(r: &mut Reader<'_>, s: &mut client::HandleStore<server::MarkedTypes<S>>) -> Self {
+    fn decode(r: &mut Reader<'_>, s: &mut server::HandleStore<server::MarkedTypes<S>>) -> Self {
         Mark::mark(S::intern_symbol(<&str>::decode(r, s)))
     }
 }
 
-impl<S: server::Server> Encode<client::HandleStore<server::MarkedTypes<S>>>
+impl<S: server::Server> Encode<server::HandleStore<server::MarkedTypes<S>>>
     for Marked<S::Symbol, Symbol>
 {
-    fn encode(self, w: &mut Writer, s: &mut client::HandleStore<server::MarkedTypes<S>>) {
+    fn encode(self, w: &mut Writer, s: &mut server::HandleStore<server::MarkedTypes<S>>) {
         S::with_symbol_string(&self.unmark(), |sym| sym.encode(w, s))
     }
 }
@@ -136,7 +136,7 @@ thread_local! {
         arena: arena::Arena::new(),
         names: fxhash::FxHashMap::default(),
         strings: Vec::new(),
-        // Start with a base of 1 to make sure that `NonZeroU32` works.
+        // Start with a base of 1 to make sure that `NonZero<u32>` works.
         sym_base: NonZero::new(1).unwrap(),
     });
 }

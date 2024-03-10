@@ -42,7 +42,7 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 
 pub use self::coherence::{add_placeholder_note, orphan_check, overlapping_impls};
-pub use self::coherence::{OrphanCheckErr, OverlapResult};
+pub use self::coherence::{IsFirstInputType, OrphanCheckErr, OverlapResult};
 pub use self::engine::{ObligationCtxt, TraitEngineExt};
 pub use self::fulfill::{FulfillmentContext, PendingPredicateObligation};
 pub use self::normalize::NormalizeExt;
@@ -172,9 +172,7 @@ fn do_normalize_predicates<'tcx>(
     // the normalized predicates.
     let errors = infcx.resolve_regions(&outlives_env);
     if !errors.is_empty() {
-        // @lcnr: Let's still ICE here for now. I want a test case
-        // for that.
-        tcx.dcx().span_bug(
+        tcx.dcx().span_delayed_bug(
             span,
             format!("failed region resolution while normalizing {elaborated_env:?}: {errors:?}"),
         );
@@ -437,8 +435,8 @@ fn is_impossible_associated_item(
         trait_item_def_id: DefId,
     }
     impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for ReferencesOnlyParentGenerics<'tcx> {
-        type BreakTy = ();
-        fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
+        type Result = ControlFlow<()>;
+        fn visit_ty(&mut self, t: Ty<'tcx>) -> Self::Result {
             // If this is a parameter from the trait item's own generics, then bail
             if let ty::Param(param) = t.kind()
                 && let param_def_id = self.generics.type_param(param, self.tcx).def_id
@@ -448,7 +446,7 @@ fn is_impossible_associated_item(
             }
             t.super_visit_with(self)
         }
-        fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
+        fn visit_region(&mut self, r: ty::Region<'tcx>) -> Self::Result {
             if let ty::ReEarlyParam(param) = r.kind()
                 && let param_def_id = self.generics.region_param(&param, self.tcx).def_id
                 && self.tcx.parent(param_def_id) == self.trait_item_def_id
@@ -457,7 +455,7 @@ fn is_impossible_associated_item(
             }
             ControlFlow::Continue(())
         }
-        fn visit_const(&mut self, ct: ty::Const<'tcx>) -> ControlFlow<Self::BreakTy> {
+        fn visit_const(&mut self, ct: ty::Const<'tcx>) -> Self::Result {
             if let ty::ConstKind::Param(param) = ct.kind()
                 && let param_def_id = self.generics.const_param(&param, self.tcx).def_id
                 && self.tcx.parent(param_def_id) == self.trait_item_def_id

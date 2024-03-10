@@ -161,14 +161,35 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-#[stable(feature = "alloc_c_string", since = "1.64.0")]
-pub use alloc::ffi::{CString, FromVecWithNulError, IntoStringError, NulError};
-#[stable(feature = "cstr_from_bytes_until_nul", since = "1.73.0")]
-pub use core::ffi::FromBytesUntilNulError;
-#[stable(feature = "core_c_str", since = "1.64.0")]
-pub use core::ffi::{CStr, FromBytesWithNulError};
+#[unstable(feature = "c_str_module", issue = "112134")]
+pub mod c_str;
+
+#[doc(inline)]
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use self::c_str::{CStr, CString};
+
+#[doc(no_inline)]
+#[stable(feature = "cstr_from_bytes", since = "1.10.0")]
+pub use self::c_str::FromBytesWithNulError;
+
+#[doc(no_inline)]
+#[stable(feature = "cstr_from_bytes_until_nul", since = "1.69.0")]
+pub use self::c_str::FromBytesUntilNulError;
+
+#[doc(no_inline)]
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use self::c_str::NulError;
+
+#[doc(no_inline)]
+#[stable(feature = "cstring_from_vec_with_nul", since = "1.58.0")]
+pub use self::c_str::FromVecWithNulError;
+
+#[doc(no_inline)]
+#[stable(feature = "cstring_into", since = "1.7.0")]
+pub use self::c_str::IntoStringError;
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[doc(inline)]
 pub use self::os_str::{OsStr, OsString};
 
 #[stable(feature = "core_ffi_c", since = "1.64.0")]
@@ -188,4 +209,5 @@ pub use core::ffi::c_void;
 )]
 pub use core::ffi::{VaList, VaListImpl};
 
-mod os_str;
+#[unstable(feature = "os_str_display", issue = "120048")]
+pub mod os_str;

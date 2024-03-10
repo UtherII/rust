@@ -5,6 +5,7 @@
 use crate::infer::at::At;
 use crate::infer::canonical::OriginalQueryValues;
 use crate::infer::{InferCtxt, InferOk};
+use crate::traits::error_reporting::OverflowCause;
 use crate::traits::error_reporting::TypeErrCtxtExt;
 use crate::traits::normalize::needs_normalization;
 use crate::traits::{BoundVarReplacer, PlaceholderReplacer};
@@ -16,8 +17,6 @@ use rustc_middle::ty::fold::{FallibleTypeFolder, TypeFoldable, TypeSuperFoldable
 use rustc_middle::ty::visit::{TypeSuperVisitable, TypeVisitable, TypeVisitableExt};
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitor};
 use rustc_span::DUMMY_SP;
-
-use std::ops::ControlFlow;
 
 use super::NoSolution;
 
@@ -122,28 +121,23 @@ struct MaxEscapingBoundVarVisitor {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for MaxEscapingBoundVarVisitor {
-    fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(
-        &mut self,
-        t: &ty::Binder<'tcx, T>,
-    ) -> ControlFlow<Self::BreakTy> {
+    fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(&mut self, t: &ty::Binder<'tcx, T>) {
         self.outer_index.shift_in(1);
-        let result = t.super_visit_with(self);
+        t.super_visit_with(self);
         self.outer_index.shift_out(1);
-        result
     }
 
     #[inline]
-    fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
+    fn visit_ty(&mut self, t: Ty<'tcx>) {
         if t.outer_exclusive_binder() > self.outer_index {
             self.escaping = self
                 .escaping
                 .max(t.outer_exclusive_binder().as_usize() - self.outer_index.as_usize());
         }
-        ControlFlow::Continue(())
     }
 
     #[inline]
-    fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
+    fn visit_region(&mut self, r: ty::Region<'tcx>) {
         match *r {
             ty::ReBound(debruijn, _) if debruijn > self.outer_index => {
                 self.escaping =
@@ -151,16 +145,14 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for MaxEscapingBoundVarVisitor {
             }
             _ => {}
         }
-        ControlFlow::Continue(())
     }
 
-    fn visit_const(&mut self, ct: ty::Const<'tcx>) -> ControlFlow<Self::BreakTy> {
+    fn visit_const(&mut self, ct: ty::Const<'tcx>) {
         if ct.outer_exclusive_binder() > self.outer_index {
             self.escaping = self
                 .escaping
                 .max(ct.outer_exclusive_binder().as_usize() - self.outer_index.as_usize());
         }
-        ControlFlow::Continue(())
     }
 }
 
@@ -228,7 +220,11 @@ impl<'cx, 'tcx> FallibleTypeFolder<TyCtxt<'tcx>> for QueryNormalizer<'cx, 'tcx> 
                             let guar = self
                                 .infcx
                                 .err_ctxt()
-                                .build_overflow_error(&ty, self.cause.span, true)
+                                .build_overflow_error(
+                                    OverflowCause::DeeplyNormalize(data),
+                                    self.cause.span,
+                                    true,
+                                )
                                 .delay_as_bug();
                             return Ok(Ty::new_error(self.interner(), guar));
                         }

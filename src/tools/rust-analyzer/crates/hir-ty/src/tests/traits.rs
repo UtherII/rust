@@ -1232,6 +1232,53 @@ fn test(x: impl Trait<u64>, y: &impl Trait<u64>) {
 }
 
 #[test]
+fn argument_impl_trait_with_projection() {
+    check_infer(
+        r#"
+trait X {
+    type Item;
+}
+
+impl<T> X for [T; 2] {
+    type Item = T;
+}
+
+trait Y {}
+
+impl<T> Y for T {}
+
+enum R<T, U> {
+    A(T),
+    B(U),
+}
+
+fn foo<T>(x: impl X<Item = R<impl Y, T>>) -> T { loop {} }
+
+fn bar() {
+    let a = foo([R::A(()), R::B(7)]);
+}
+"#,
+        expect![[r#"
+            153..154 'x': impl X<Item = R<impl Y + ?Sized, T>> + ?Sized
+            190..201 '{ loop {} }': T
+            192..199 'loop {}': !
+            197..199 '{}': ()
+            212..253 '{     ...)]); }': ()
+            222..223 'a': i32
+            226..229 'foo': fn foo<i32>([R<(), i32>; 2]) -> i32
+            226..250 'foo([R...B(7)])': i32
+            230..249 '[R::A(...:B(7)]': [R<(), i32>; 2]
+            231..235 'R::A': extern "rust-call" A<(), i32>(()) -> R<(), i32>
+            231..239 'R::A(())': R<(), i32>
+            236..238 '()': ()
+            241..245 'R::B': extern "rust-call" B<(), i32>(i32) -> R<(), i32>
+            241..248 'R::B(7)': R<(), i32>
+            246..247 '7': i32
+        "#]],
+    );
+}
+
+#[test]
 fn simple_return_pos_impl_trait() {
     cov_mark::check!(lower_rpit);
     check_infer(
@@ -1333,9 +1380,9 @@ fn foo<const C: u8, T>() -> (impl FnOnce(&str, T), impl Trait<u8>) {
 }
 "#,
         expect![[r#"
-            134..165 '{     ...(C)) }': (impl Fn(&str, T), Bar<u8>)
-            140..163 '(|inpu...ar(C))': (impl Fn(&str, T), Bar<u8>)
-            141..154 '|input, t| {}': impl Fn(&str, T)
+            134..165 '{     ...(C)) }': (impl FnOnce(&str, T), Bar<u8>)
+            140..163 '(|inpu...ar(C))': (impl FnOnce(&str, T), Bar<u8>)
+            141..154 '|input, t| {}': impl FnOnce(&str, T)
             142..147 'input': &str
             149..150 't': T
             152..154 '{}': ()
@@ -1963,20 +2010,20 @@ fn test() {
             163..167 '1u32': u32
             174..175 'x': Option<u32>
             174..190 'x.map(...v + 1)': Option<u32>
-            180..189 '|v| v + 1': impl Fn(u32) -> u32
+            180..189 '|v| v + 1': impl FnOnce(u32) -> u32
             181..182 'v': u32
             184..185 'v': u32
             184..189 'v + 1': u32
             188..189 '1': u32
             196..197 'x': Option<u32>
             196..212 'x.map(... 1u64)': Option<u64>
-            202..211 '|_v| 1u64': impl Fn(u32) -> u64
+            202..211 '|_v| 1u64': impl FnOnce(u32) -> u64
             203..205 '_v': u32
             207..211 '1u64': u64
             222..223 'y': Option<i64>
             239..240 'x': Option<u32>
             239..252 'x.map(|_v| 1)': Option<i64>
-            245..251 '|_v| 1': impl Fn(u32) -> i64
+            245..251 '|_v| 1': impl FnOnce(u32) -> i64
             246..248 '_v': u32
             250..251 '1': i64
         "#]],
@@ -2062,17 +2109,17 @@ fn test() {
             312..314 '{}': ()
             330..489 '{     ... S); }': ()
             340..342 'x1': u64
-            345..349 'foo1': fn foo1<S, u64, impl Fn(S) -> u64>(S, impl Fn(S) -> u64) -> u64
+            345..349 'foo1': fn foo1<S, u64, impl FnOnce(S) -> u64>(S, impl FnOnce(S) -> u64) -> u64
             345..368 'foo1(S...hod())': u64
             350..351 'S': S
-            353..367 '|s| s.method()': impl Fn(S) -> u64
+            353..367 '|s| s.method()': impl FnOnce(S) -> u64
             354..355 's': S
             357..358 's': S
             357..367 's.method()': u64
             378..380 'x2': u64
-            383..387 'foo2': fn foo2<S, u64, impl Fn(S) -> u64>(impl Fn(S) -> u64, S) -> u64
+            383..387 'foo2': fn foo2<S, u64, impl FnOnce(S) -> u64>(impl FnOnce(S) -> u64, S) -> u64
             383..406 'foo2(|...(), S)': u64
-            388..402 '|s| s.method()': impl Fn(S) -> u64
+            388..402 '|s| s.method()': impl FnOnce(S) -> u64
             389..390 's': S
             392..393 's': S
             392..402 's.method()': u64
@@ -2081,14 +2128,14 @@ fn test() {
             421..422 'S': S
             421..446 'S.foo1...hod())': u64
             428..429 'S': S
-            431..445 '|s| s.method()': impl Fn(S) -> u64
+            431..445 '|s| s.method()': impl FnOnce(S) -> u64
             432..433 's': S
             435..436 's': S
             435..445 's.method()': u64
             456..458 'x4': u64
             461..462 'S': S
             461..486 'S.foo2...(), S)': u64
-            468..482 '|s| s.method()': impl Fn(S) -> u64
+            468..482 '|s| s.method()': impl FnOnce(S) -> u64
             469..470 's': S
             472..473 's': S
             472..482 's.method()': u64
@@ -2562,9 +2609,9 @@ fn main() {
             72..74 '_v': F
             117..120 '{ }': ()
             132..163 '{     ... }); }': ()
-            138..148 'f::<(), _>': fn f<(), impl Fn(&())>(impl Fn(&()))
+            138..148 'f::<(), _>': fn f<(), impl FnOnce(&())>(impl FnOnce(&()))
             138..160 'f::<()... z; })': ()
-            149..159 '|z| { z; }': impl Fn(&())
+            149..159 '|z| { z; }': impl FnOnce(&())
             150..151 'z': &()
             153..159 '{ z; }': ()
             155..156 'z': &()
@@ -2749,9 +2796,9 @@ fn main() {
             983..998 'Vec::<i32>::new': fn new<i32>() -> Vec<i32>
             983..1000 'Vec::<...:new()': Vec<i32>
             983..1012 'Vec::<...iter()': IntoIter<i32>
-            983..1075 'Vec::<...one })': FilterMap<IntoIter<i32>, impl Fn(i32) -> Option<u32>>
+            983..1075 'Vec::<...one })': FilterMap<IntoIter<i32>, impl FnMut(i32) -> Option<u32>>
             983..1101 'Vec::<... y; })': ()
-            1029..1074 '|x| if...None }': impl Fn(i32) -> Option<u32>
+            1029..1074 '|x| if...None }': impl FnMut(i32) -> Option<u32>
             1030..1031 'x': i32
             1033..1074 'if x >...None }': Option<u32>
             1036..1037 'x': i32
@@ -2764,7 +2811,7 @@ fn main() {
             1049..1057 'x as u32': u32
             1066..1074 '{ None }': Option<u32>
             1068..1072 'None': Option<u32>
-            1090..1100 '|y| { y; }': impl Fn(u32)
+            1090..1100 '|y| { y; }': impl FnMut(u32)
             1091..1092 'y': u32
             1094..1100 '{ y; }': ()
             1096..1097 'y': u32
@@ -3101,8 +3148,8 @@ fn foo() {
             232..236 'None': Option<i32>
             246..247 'f': Box<dyn FnOnce(&Option<i32>)>
             281..310 'Box { ... {}) }': Box<dyn FnOnce(&Option<i32>)>
-            294..308 '&mut (|ps| {})': &mut impl Fn(&Option<i32>)
-            300..307 '|ps| {}': impl Fn(&Option<i32>)
+            294..308 '&mut (|ps| {})': &mut impl FnOnce(&Option<i32>)
+            300..307 '|ps| {}': impl FnOnce(&Option<i32>)
             301..303 'ps': &Option<i32>
             305..307 '{}': ()
             316..317 'f': Box<dyn FnOnce(&Option<i32>)>
@@ -4549,6 +4596,61 @@ fn foo() {
     map["a"] = ();
     map;
   //^^^ SomeMap<&str>
+}
+"#,
+    );
+}
+
+#[test]
+fn auto_trait_bound() {
+    check_types(
+        r#"
+//- minicore: sized
+auto trait Send {}
+impl<T> !Send for *const T {}
+
+struct Yes;
+trait IsSend { const IS_SEND: Yes; }
+impl<T: Send> IsSend for T { const IS_SEND: Yes = Yes; }
+
+struct Struct<T>(T);
+enum Enum<T> { A, B(T) }
+union Union<T> { t: T }
+
+#[lang = "phantom_data"]
+struct PhantomData<T: ?Sized>;
+
+fn f<T: Send, U>() {
+    T::IS_SEND;
+  //^^^^^^^^^^Yes
+    U::IS_SEND;
+  //^^^^^^^^^^{unknown}
+    <*const T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^{unknown}
+    Struct::<T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^Yes
+    Struct::<U>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^Yes
+    Struct::<*const T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^^^^^^^^Yes
+    Enum::<T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^Yes
+    Enum::<U>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^Yes
+    Enum::<*const T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^^^^^^Yes
+    Union::<T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^Yes
+    Union::<U>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^Yes
+    Union::<*const T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^^^^^^^Yes
+    PhantomData::<T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^^^^^^Yes
+    PhantomData::<U>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^^^^^^{unknown}
+    PhantomData::<*const T>::IS_SEND;
+  //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^{unknown}
 }
 "#,
     );

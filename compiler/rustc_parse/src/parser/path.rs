@@ -2,6 +2,7 @@ use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{Parser, Restrictions, TokenType};
 use crate::errors::PathSingleColon;
 use crate::{errors, maybe_whole};
+use ast::token::IdentIsRaw;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use rustc_ast::{
@@ -249,7 +250,7 @@ impl<'a> Parser<'a> {
                         self.dcx().emit_err(PathSingleColon {
                             span: self.prev_token.span,
                             type_ascription: self
-                                .sess
+                                .psess
                                 .unstable_features
                                 .is_nightly_build()
                                 .then_some(()),
@@ -321,7 +322,7 @@ impl<'a> Parser<'a> {
                             err = self.dcx().create_err(PathSingleColon {
                                 span: self.token.span,
                                 type_ascription: self
-                                    .sess
+                                    .psess
                                     .unstable_features
                                     .is_nightly_build()
                                     .then_some(()),
@@ -390,7 +391,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_path_segment_ident(&mut self) -> PResult<'a, Ident> {
         match self.token.ident() {
-            Some((ident, false)) if ident.is_path_segment_keyword() => {
+            Some((ident, IdentIsRaw::No)) if ident.is_path_segment_keyword() => {
                 self.bump();
                 Ok(ident)
             }
@@ -637,9 +638,9 @@ impl<'a> Parser<'a> {
                             && args.inputs.is_empty()
                             && matches!(args.output, ast::FnRetTy::Default(..))
                         {
-                            self.sess.gated_spans.gate(sym::return_type_notation, span);
+                            self.psess.gated_spans.gate(sym::return_type_notation, span);
                         } else {
-                            self.sess.gated_spans.gate(sym::associated_type_bounds, span);
+                            self.psess.gated_spans.gate(sym::associated_type_bounds, span);
                         }
                     }
                     let constraint =
@@ -674,7 +675,7 @@ impl<'a> Parser<'a> {
         let term = match arg {
             Some(GenericArg::Type(ty)) => ty.into(),
             Some(GenericArg::Const(c)) => {
-                self.sess.gated_spans.gate(sym::associated_const_equality, span);
+                self.psess.gated_spans.gate(sym::associated_const_equality, span);
                 c.into()
             }
             Some(GenericArg::Lifetime(lt)) => {
@@ -690,7 +691,7 @@ impl<'a> Parser<'a> {
                     .struct_span_err(after_eq.to(before_next), "missing type to the right of `=`");
                 if matches!(self.token.kind, token::Comma | token::Gt) {
                     err.span_suggestion(
-                        self.sess.source_map().next_point(eq).to(before_next),
+                        self.psess.source_map().next_point(eq).to(before_next),
                         "to constrain the associated type, add a type after `=`",
                         " TheType",
                         Applicability::HasPlaceholders,

@@ -655,13 +655,21 @@ fn collect_tests_from_dir(
         return Ok(());
     }
 
-    if config.mode == Mode::RunMake && dir.join("Makefile").exists() {
-        let paths = TestPaths {
-            file: dir.to_path_buf(),
-            relative_dir: relative_dir_path.parent().unwrap().to_path_buf(),
-        };
-        tests.extend(make_test(config, cache, &paths, inputs, poisoned));
-        return Ok(());
+    if config.mode == Mode::RunMake {
+        if dir.join("Makefile").exists() && dir.join("rmake.rs").exists() {
+            return Err(io::Error::other(
+                "run-make tests cannot have both `Makefile` and `rmake.rs`",
+            ));
+        }
+
+        if dir.join("Makefile").exists() || dir.join("rmake.rs").exists() {
+            let paths = TestPaths {
+                file: dir.to_path_buf(),
+                relative_dir: relative_dir_path.parent().unwrap().to_path_buf(),
+            };
+            tests.extend(make_test(config, cache, &paths, inputs, poisoned));
+            return Ok(());
+        }
     }
 
     // If we find a test foo/bar.rs, we have to build the
@@ -733,8 +741,17 @@ fn make_test(
     poisoned: &mut bool,
 ) -> Vec<test::TestDescAndFn> {
     let test_path = if config.mode == Mode::RunMake {
-        // Parse directives in the Makefile
-        testpaths.file.join("Makefile")
+        if testpaths.file.join("rmake.rs").exists() && testpaths.file.join("Makefile").exists() {
+            panic!("run-make tests cannot have both `rmake.rs` and `Makefile`");
+        }
+
+        if testpaths.file.join("rmake.rs").exists() {
+            // Parse directives in rmake.rs.
+            testpaths.file.join("rmake.rs")
+        } else {
+            // Parse directives in the Makefile.
+            testpaths.file.join("Makefile")
+        }
     } else {
         PathBuf::from(&testpaths.file)
     };
@@ -745,7 +762,7 @@ fn make_test(
     let revisions = if early_props.revisions.is_empty() || config.mode == Mode::Incremental {
         vec![None]
     } else {
-        early_props.revisions.iter().map(Some).collect()
+        early_props.revisions.iter().map(|r| Some(r.as_str())).collect()
     };
 
     revisions
@@ -753,20 +770,13 @@ fn make_test(
         .map(|revision| {
             let src_file =
                 std::fs::File::open(&test_path).expect("open test file to parse ignores");
-            let cfg = revision.map(|v| &**v);
             let test_name = crate::make_test_name(&config, testpaths, revision);
             let mut desc = make_test_description(
-                &config, cache, test_name, &test_path, src_file, cfg, poisoned,
+                &config, cache, test_name, &test_path, src_file, revision, poisoned,
             );
             // Ignore tests that already run and are up to date with respect to inputs.
             if !config.force_rerun {
-                desc.ignore |= is_up_to_date(
-                    &config,
-                    testpaths,
-                    &early_props,
-                    revision.map(|s| s.as_str()),
-                    inputs,
-                );
+                desc.ignore |= is_up_to_date(&config, testpaths, &early_props, revision, inputs);
             }
             test::TestDescAndFn {
                 desc,
@@ -879,7 +889,7 @@ impl Stamp {
 fn make_test_name(
     config: &Config,
     testpaths: &TestPaths,
-    revision: Option<&String>,
+    revision: Option<&str>,
 ) -> test::TestName {
     // Print the name of the file, relative to the repository root.
     // `src_base` looks like `/path/to/rust/tests/ui`
@@ -907,11 +917,11 @@ fn make_test_name(
 fn make_test_closure(
     config: Arc<Config>,
     testpaths: &TestPaths,
-    revision: Option<&String>,
+    revision: Option<&str>,
 ) -> test::TestFn {
     let config = config.clone();
     let testpaths = testpaths.clone();
-    let revision = revision.cloned();
+    let revision = revision.map(str::to_owned);
     test::DynTestFn(Box::new(move || {
         runtest::run(config, &testpaths, revision.as_deref());
         Ok(())

@@ -944,6 +944,21 @@ impl<T, A: Allocator> Rc<T, A> {
     /// is in fact equivalent to <code>[Rc::try_unwrap]\(this).[ok][Result::ok]()</code>.
     /// (Note that the same kind of equivalence does **not** hold true for
     /// [`Arc`](crate::sync::Arc), due to race conditions that do not apply to `Rc`!)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::rc::Rc;
+    ///
+    /// let x = Rc::new(3);
+    /// assert_eq!(Rc::into_inner(x), Some(3));
+    ///
+    /// let x = Rc::new(4);
+    /// let y = Rc::clone(&x);
+    ///
+    /// assert_eq!(Rc::into_inner(y), None);
+    /// assert_eq!(Rc::into_inner(x), Some(4));
+    /// ```
     #[inline]
     #[stable(feature = "rc_into_inner", since = "1.70.0")]
     pub fn into_inner(this: Self) -> Option<T> {
@@ -1329,6 +1344,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// let x_ptr = Rc::into_raw(x);
     /// assert_eq!(unsafe { &*x_ptr }, "hello");
     /// ```
+    #[must_use = "losing the pointer will leak memory"]
     #[stable(feature = "rc_raw", since = "1.17.0")]
     #[rustc_never_returns_null_ptr]
     pub fn into_raw(this: Self) -> *const T {
@@ -1969,7 +1985,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
 
             // Copy value as bytes
             ptr::copy_nonoverlapping(
-                &*src as *const T as *const u8,
+                core::ptr::addr_of!(*src) as *const u8,
                 ptr::addr_of_mut!((*ptr).value) as *mut u8,
                 value_size,
             );
@@ -2440,7 +2456,7 @@ impl<T: ?Sized + fmt::Debug, A: Allocator> fmt::Debug for Rc<T, A> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized, A: Allocator> fmt::Pointer for Rc<T, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Pointer::fmt(&(&**self as *const T), f)
+        fmt::Pointer::fmt(&core::ptr::addr_of!(**self), f)
     }
 }
 
@@ -2804,7 +2820,9 @@ impl<T> Weak<T> {
     #[must_use]
     pub const fn new() -> Weak<T> {
         Weak {
-            ptr: unsafe { NonNull::new_unchecked(ptr::invalid_mut::<RcBox<T>>(usize::MAX)) },
+            ptr: unsafe {
+                NonNull::new_unchecked(ptr::without_provenance_mut::<RcBox<T>>(usize::MAX))
+            },
             alloc: Global,
         }
     }
@@ -2829,7 +2847,9 @@ impl<T, A: Allocator> Weak<T, A> {
     #[unstable(feature = "allocator_api", issue = "32838")]
     pub fn new_in(alloc: A) -> Weak<T, A> {
         Weak {
-            ptr: unsafe { NonNull::new_unchecked(ptr::invalid_mut::<RcBox<T>>(usize::MAX)) },
+            ptr: unsafe {
+                NonNull::new_unchecked(ptr::without_provenance_mut::<RcBox<T>>(usize::MAX))
+            },
             alloc,
         }
     }
@@ -2966,7 +2986,7 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// [`from_raw`]: Weak::from_raw
     /// [`as_ptr`]: Weak::as_ptr
-    #[must_use = "`self` will be dropped if the result is not used"]
+    #[must_use = "losing the pointer will leak memory"]
     #[stable(feature = "weak_into_raw", since = "1.45.0")]
     pub fn into_raw(self) -> *const T {
         let result = self.as_ptr();

@@ -146,9 +146,6 @@ const_eval_intern_kind = {$kind ->
     *[other] {""}
 }
 
-const_eval_invalid_align =
-    align has to be a power of 2
-
 const_eval_invalid_align_details =
     invalid align passed to `{$name}`: {$align} is {$err_kind ->
         [not_power_of_two] not a power of 2
@@ -231,9 +228,6 @@ const_eval_non_const_fn_call =
 
 const_eval_non_const_impl =
     impl defined here, but it is not `const`
-
-const_eval_noreturn_asm_returned =
-    returned from noreturn inline assembly
 
 const_eval_not_enough_caller_args =
     calling a function with fewer arguments than it requires
@@ -453,7 +447,6 @@ const_eval_validation_invalid_fn_ptr = {$front_matter}: encountered {$value}, bu
 const_eval_validation_invalid_ref_meta = {$front_matter}: encountered invalid reference metadata: total size is bigger than largest supported object
 const_eval_validation_invalid_ref_slice_meta = {$front_matter}: encountered invalid reference metadata: slice is bigger than largest supported object
 const_eval_validation_invalid_vtable_ptr = {$front_matter}: encountered {$value}, but expected a vtable pointer
-const_eval_validation_mutable_ref_in_const_or_static = {$front_matter}: encountered mutable reference in a `const` or `static`
 const_eval_validation_mutable_ref_to_immutable = {$front_matter}: encountered mutable reference or box pointing to read-only memory
 const_eval_validation_never_val = {$front_matter}: encountered a value of the never type `!`
 const_eval_validation_null_box = {$front_matter}: encountered a null box

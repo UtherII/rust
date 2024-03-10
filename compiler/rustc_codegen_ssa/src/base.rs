@@ -449,10 +449,7 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         let Some(llfn) = cx.declare_c_main(llfty) else {
             // FIXME: We should be smart and show a better diagnostic here.
             let span = cx.tcx().def_span(rust_main_def_id);
-            let dcx = cx.tcx().dcx();
-            dcx.emit_err(errors::MultipleMainFunctions { span });
-            dcx.abort_if_errors();
-            bug!();
+            cx.tcx().dcx().emit_fatal(errors::MultipleMainFunctions { span });
         };
 
         // `main` should respect same config for frame pointer elimination as rest of code
@@ -513,11 +510,13 @@ fn get_argc_argv<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         // Params for UEFI
         let param_handle = bx.get_param(0);
         let param_system_table = bx.get_param(1);
+        let ptr_size = bx.tcx().data_layout.pointer_size;
+        let ptr_align = bx.tcx().data_layout.pointer_align.abi;
         let arg_argc = bx.const_int(cx.type_isize(), 2);
-        let arg_argv = bx.alloca(cx.type_array(cx.type_ptr(), 2), Align::ONE);
-        bx.store(param_handle, arg_argv, Align::ONE);
-        let arg_argv_el1 = bx.gep(cx.type_ptr(), arg_argv, &[bx.const_int(cx.type_int(), 1)]);
-        bx.store(param_system_table, arg_argv_el1, Align::ONE);
+        let arg_argv = bx.alloca(cx.type_array(cx.type_ptr(), 2), ptr_align);
+        bx.store(param_handle, arg_argv, ptr_align);
+        let arg_argv_el1 = bx.inbounds_ptradd(arg_argv, bx.const_usize(ptr_size.bytes()));
+        bx.store(param_system_table, arg_argv_el1, ptr_align);
         (arg_argc, arg_argv)
     } else if cx.sess().target.main_needs_argc_argv {
         // Params from native `main()` used as args for rust start function
@@ -910,7 +909,11 @@ impl CrateInfo {
                     lang_items::required(tcx, l).then_some(name)
                 })
                 .collect();
-            let prefix = if target.is_like_windows && target.arch == "x86" { "_" } else { "" };
+            let prefix = match (target.is_like_windows, target.arch.as_ref()) {
+                (true, "x86") => "_",
+                (true, "arm64ec") => "#",
+                _ => "",
+            };
 
             // This loop only adds new items to values of the hash map, so the order in which we
             // iterate over the values is not important.

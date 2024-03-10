@@ -1,7 +1,7 @@
 use crate::fluent_generated as fluent;
 use rustc_errors::{
-    codes::*, AddToDiagnostic, Applicability, DiagCtxt, DiagnosticBuilder, EmissionGuarantee,
-    IntoDiagnostic, Level, SubdiagnosticMessageOp,
+    codes::*, AddToDiagnostic, Applicability, Diag, DiagCtxt, EmissionGuarantee, IntoDiagnostic,
+    Level, SubdiagMessageOp,
 };
 use rustc_macros::Diagnostic;
 use rustc_middle::ty::{self, ClosureKind, PolyTraitRef, Ty};
@@ -59,9 +59,8 @@ pub struct NegativePositiveConflict<'tcx> {
 
 impl<G: EmissionGuarantee> IntoDiagnostic<'_, G> for NegativePositiveConflict<'_> {
     #[track_caller]
-    fn into_diagnostic(self, dcx: &DiagCtxt, level: Level) -> DiagnosticBuilder<'_, G> {
-        let mut diag =
-            DiagnosticBuilder::new(dcx, level, fluent::trait_selection_negative_positive_conflict);
+    fn into_diagnostic(self, dcx: &DiagCtxt, level: Level) -> Diag<'_, G> {
+        let mut diag = Diag::new(dcx, level, fluent::trait_selection_negative_positive_conflict);
         diag.arg("trait_desc", self.trait_desc.print_only_trait_path().to_string());
         diag.arg("self_desc", self.self_ty.map_or_else(|| "none".to_string(), |ty| ty.to_string()));
         diag.span(self.impl_span);
@@ -102,9 +101,9 @@ pub enum AdjustSignatureBorrow {
 }
 
 impl AddToDiagnostic for AdjustSignatureBorrow {
-    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagnosticMessageOp<G>>(
+    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
         self,
-        diag: &mut DiagnosticBuilder<'_, G>,
+        diag: &mut Diag<'_, G>,
         _f: F,
     ) {
         match self {

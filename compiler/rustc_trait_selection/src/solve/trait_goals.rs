@@ -2,6 +2,7 @@
 
 use crate::traits::supertrait_def_ids;
 
+use super::assembly::structural_traits::AsyncCallableRelevantTypes;
 use super::assembly::{self, structural_traits, Candidate};
 use super::{EvalCtxt, GoalSource, SolverMode};
 use rustc_data_structures::fx::FxIndexSet;
@@ -46,14 +47,14 @@ impl<'tcx> assembly::GoalKind<'tcx> for TraitPredicate<'tcx> {
         let drcx = DeepRejectCtxt { treat_obligation_params: TreatParams::ForLookup };
         if !drcx.args_may_unify(
             goal.predicate.trait_ref.args,
-            impl_trait_header.skip_binder().trait_ref.args,
+            impl_trait_header.trait_ref.skip_binder().args,
         ) {
             return Err(NoSolution);
         }
 
         // An upper bound of the certainty of this goal, used to lower the certainty
         // of reservation impl to ambiguous during coherence.
-        let impl_polarity = impl_trait_header.skip_binder().polarity;
+        let impl_polarity = impl_trait_header.polarity;
         let maximal_certainty = match impl_polarity {
             ty::ImplPolarity::Positive | ty::ImplPolarity::Negative => {
                 match impl_polarity == goal.predicate.polarity {
@@ -69,7 +70,7 @@ impl<'tcx> assembly::GoalKind<'tcx> for TraitPredicate<'tcx> {
 
         ecx.probe_trait_candidate(CandidateSource::Impl(impl_def_id)).enter(|ecx| {
             let impl_args = ecx.fresh_args_for_item(impl_def_id);
-            let impl_trait_ref = impl_trait_header.instantiate(tcx, impl_args).trait_ref;
+            let impl_trait_ref = impl_trait_header.trait_ref.instantiate(tcx, impl_args);
 
             ecx.eq(goal.param_env, goal.predicate.trait_ref, impl_trait_ref)?;
             let where_clause_bounds = tcx
@@ -101,7 +102,6 @@ impl<'tcx> assembly::GoalKind<'tcx> for TraitPredicate<'tcx> {
             if trait_clause.def_id() == goal.predicate.def_id()
                 && trait_clause.polarity() == goal.predicate.polarity
             {
-                // FIXME: Constness
                 ecx.probe_misc_candidate("assumption").enter(|ecx| {
                     let assumption_trait_pred = ecx.instantiate_binder_with_infer(trait_clause);
                     ecx.eq(
@@ -327,14 +327,19 @@ impl<'tcx> assembly::GoalKind<'tcx> for TraitPredicate<'tcx> {
                 // This region doesn't matter because we're throwing away the coroutine type
                 tcx.lifetimes.re_static,
             )?;
-        let output_is_sized_pred =
-            tupled_inputs_and_output_and_coroutine.map_bound(|(_, output, _)| {
-                ty::TraitRef::from_lang_item(tcx, LangItem::Sized, DUMMY_SP, [output])
-            });
+        let output_is_sized_pred = tupled_inputs_and_output_and_coroutine.map_bound(
+            |AsyncCallableRelevantTypes { output_coroutine_ty, .. }| {
+                ty::TraitRef::from_lang_item(tcx, LangItem::Sized, DUMMY_SP, [output_coroutine_ty])
+            },
+        );
 
         let pred = tupled_inputs_and_output_and_coroutine
-            .map_bound(|(inputs, _, _)| {
-                ty::TraitRef::new(tcx, goal.predicate.def_id(), [goal.predicate.self_ty(), inputs])
+            .map_bound(|AsyncCallableRelevantTypes { tupled_inputs_ty, .. }| {
+                ty::TraitRef::new(
+                    tcx,
+                    goal.predicate.def_id(),
+                    [goal.predicate.self_ty(), tupled_inputs_ty],
+                )
             })
             .to_predicate(tcx);
         // A built-in `AsyncFn` impl only holds if the output is sized.
@@ -543,14 +548,13 @@ impl<'tcx> assembly::GoalKind<'tcx> for TraitPredicate<'tcx> {
         let args = ecx.tcx().erase_regions(goal.predicate.trait_ref.args);
 
         let Some(assume) =
-            rustc_transmute::Assume::from_const(ecx.tcx(), goal.param_env, args.const_at(3))
+            rustc_transmute::Assume::from_const(ecx.tcx(), goal.param_env, args.const_at(2))
         else {
             return Err(NoSolution);
         };
 
         let certainty = ecx.is_transmutable(
             rustc_transmute::Types { dst: args.type_at(0), src: args.type_at(1) },
-            args.type_at(2),
             assume,
         )?;
         ecx.evaluate_added_goals_and_make_canonical_response(certainty)

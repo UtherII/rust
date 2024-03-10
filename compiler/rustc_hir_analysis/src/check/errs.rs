@@ -1,9 +1,8 @@
 use rustc_hir as hir;
 use rustc_hir_pretty::qpath_to_string;
 use rustc_lint_defs::builtin::STATIC_MUT_REFS;
-use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::{Mutability, TyCtxt};
 use rustc_span::Span;
-use rustc_type_ir::Mutability;
 
 use crate::errors;
 
@@ -71,7 +70,7 @@ fn handle_static_mut_ref(
         } else {
             (errors::StaticMutRefSugg::Shared { span, var }, "shared")
         };
-        tcx.sess.parse_sess.dcx.emit_err(errors::StaticMutRef { span, sugg, shared });
+        tcx.sess.psess.dcx.emit_err(errors::StaticMutRef { span, sugg, shared });
         return;
     }
 

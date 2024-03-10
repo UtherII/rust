@@ -70,17 +70,16 @@ use rustc_middle::ty::Ty;
 use rustc_span::ErrorGuaranteed;
 
 use crate::constructor::{Constructor, ConstructorSet, IntRange};
-#[cfg(feature = "rustc")]
-use crate::lints::lint_nonexhaustive_missing_variants;
 use crate::pat::DeconstructedPat;
 use crate::pat_column::PatternColumn;
-#[cfg(feature = "rustc")]
-use crate::rustc::RustcMatchCheckCtxt;
-#[cfg(feature = "rustc")]
-use crate::usefulness::{compute_match_usefulness, ValidityConstraint};
 
 pub trait Captures<'a> {}
 impl<'a, T: ?Sized> Captures<'a> for T {}
+
+/// `bool` newtype that indicates whether this is a privately uninhabited field that we should skip
+/// during analysis.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PrivateUninhabitedField(pub bool);
 
 /// Context that provides type information about constructors.
 ///
@@ -105,13 +104,12 @@ pub trait TypeCx: Sized + fmt::Debug {
     /// The number of fields for this constructor.
     fn ctor_arity(&self, ctor: &Constructor<Self>, ty: &Self::Ty) -> usize;
 
-    /// The types of the fields for this constructor. The result must have a length of
-    /// `ctor_arity()`.
+    /// The types of the fields for this constructor. The result must contain `ctor_arity()` fields.
     fn ctor_sub_tys<'a>(
         &'a self,
         ctor: &'a Constructor<Self>,
         ty: &'a Self::Ty,
-    ) -> impl Iterator<Item = Self::Ty> + ExactSizeIterator + Captures<'a>;
+    ) -> impl Iterator<Item = (Self::Ty, PrivateUninhabitedField)> + ExactSizeIterator + Captures<'a>;
 
     /// The set of all the constructors for `ty`.
     ///
@@ -138,6 +136,21 @@ pub trait TypeCx: Sized + fmt::Debug {
         _overlaps_with: &[&DeconstructedPat<Self>],
     ) {
     }
+
+    /// The maximum pattern complexity limit was reached.
+    fn complexity_exceeded(&self) -> Result<(), Self::Error>;
+
+    /// Lint that there is a gap `gap` between `pat` and all of `gapped_with` such that the gap is
+    /// not matched by another range. If `gapped_with` is empty, then `gap` is `T::MAX`. We only
+    /// detect singleton gaps.
+    /// The default implementation does nothing.
+    fn lint_non_contiguous_range_endpoints(
+        &self,
+        _pat: &DeconstructedPat<Self>,
+        _gap: IntRange,
+        _gapped_with: &[&DeconstructedPat<Self>],
+    ) {
+    }
 }
 
 /// The arm of a match expression.
@@ -160,13 +173,18 @@ impl<'p, Cx: TypeCx> Copy for MatchArm<'p, Cx> {}
 /// useful, and runs some lints.
 #[cfg(feature = "rustc")]
 pub fn analyze_match<'p, 'tcx>(
-    tycx: &RustcMatchCheckCtxt<'p, 'tcx>,
+    tycx: &rustc::RustcMatchCheckCtxt<'p, 'tcx>,
     arms: &[rustc::MatchArm<'p, 'tcx>],
     scrut_ty: Ty<'tcx>,
+    pattern_complexity_limit: Option<usize>,
 ) -> Result<rustc::UsefulnessReport<'p, 'tcx>, ErrorGuaranteed> {
+    use lints::lint_nonexhaustive_missing_variants;
+    use usefulness::{compute_match_usefulness, ValidityConstraint};
+
     let scrut_ty = tycx.reveal_opaque_ty(scrut_ty);
     let scrut_validity = ValidityConstraint::from_bool(tycx.known_valid_scrutinee);
-    let report = compute_match_usefulness(tycx, arms, scrut_ty, scrut_validity)?;
+    let report =
+        compute_match_usefulness(tycx, arms, scrut_ty, scrut_validity, pattern_complexity_limit)?;
 
     // Run the non_exhaustive_omitted_patterns lint. Only run on refutable patterns to avoid hitting
     // `if let`s. Only run if the match is exhaustive otherwise the error is redundant.

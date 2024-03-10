@@ -1,3 +1,16 @@
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "macos",
+    target_os = "watchos",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+use super::{peer_cred, UCred};
 #[cfg(any(doc, target_os = "android", target_os = "linux"))]
 use super::{recv_vectored_with_ancillary_from, send_vectored_with_ancillary_to, SocketAncillary};
 use super::{sockaddr_un, SocketAddr};
@@ -5,39 +18,11 @@ use crate::fmt;
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::net::Shutdown;
 use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "macos",
-    target_os = "watchos",
-    target_os = "netbsd",
-    target_os = "openbsd"
-))]
-use crate::os::unix::ucred;
 use crate::path::Path;
 use crate::sys::cvt;
 use crate::sys::net::Socket;
 use crate::sys_common::{AsInner, FromInner};
 use crate::time::Duration;
-
-#[unstable(feature = "peer_credentials_unix_socket", issue = "42839", reason = "unstable")]
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "macos",
-    target_os = "watchos",
-    target_os = "netbsd",
-    target_os = "openbsd"
-))]
-pub use ucred::UCred;
 
 /// A Unix stream socket.
 ///
@@ -96,7 +81,7 @@ impl UnixStream {
             let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
             let (addr, len) = sockaddr_un(path.as_ref())?;
 
-            cvt(libc::connect(inner.as_raw_fd(), &addr as *const _ as *const _, len))?;
+            cvt(libc::connect(inner.as_raw_fd(), core::ptr::addr_of!(addr) as *const _, len))?;
             Ok(UnixStream(inner))
         }
     }
@@ -130,7 +115,7 @@ impl UnixStream {
             let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
             cvt(libc::connect(
                 inner.as_raw_fd(),
-                &socket_addr.addr as *const _ as *const _,
+                core::ptr::addr_of!(socket_addr.addr) as *const _,
                 socket_addr.len,
             ))?;
             Ok(UnixStream(inner))
@@ -247,7 +232,7 @@ impl UnixStream {
         target_os = "openbsd"
     ))]
     pub fn peer_cred(&self) -> io::Result<UCred> {
-        ucred::peer_cred(self)
+        peer_cred(self)
     }
 
     /// Sets the read timeout for the socket.

@@ -568,7 +568,7 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
                         }
                     }
                 }
-                abi::F32 | abi::F64 => {}
+                abi::F16 | abi::F32 | abi::F64 | abi::F128 => {}
             }
         }
 
@@ -603,11 +603,7 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
                 let llptr = if i == 0 {
                     place.llval
                 } else {
-                    self.inbounds_gep(
-                        self.type_i8(),
-                        place.llval,
-                        &[self.const_usize(b_offset.bytes())],
-                    )
+                    self.inbounds_ptradd(place.llval, self.const_usize(b_offset.bytes()))
                 };
                 let llty = place.layout.scalar_pair_element_llvm_type(self, i, false);
                 let load = self.load(llty, llptr, align);
@@ -776,11 +772,6 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
                 UNNAMED,
             )
         }
-    }
-
-    fn struct_gep(&mut self, ty: &'ll Type, ptr: &'ll Value, idx: u64) -> &'ll Value {
-        assert_eq!(idx as c_uint as u64, idx);
-        unsafe { llvm::LLVMBuildStructGEP2(self.llbuilder, ty, ptr, idx as c_uint, UNNAMED) }
     }
 
     /* Casts */
@@ -1367,17 +1358,17 @@ impl<'a, 'll, 'tcx> Builder<'a, 'll, 'tcx> {
     pub fn vector_reduce_fmul(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
         unsafe { llvm::LLVMRustBuildVectorReduceFMul(self.llbuilder, acc, src) }
     }
-    pub fn vector_reduce_fadd_algebraic(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
+    pub fn vector_reduce_fadd_reassoc(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
         unsafe {
             let instr = llvm::LLVMRustBuildVectorReduceFAdd(self.llbuilder, acc, src);
-            llvm::LLVMRustSetAlgebraicMath(instr);
+            llvm::LLVMRustSetAllowReassoc(instr);
             instr
         }
     }
-    pub fn vector_reduce_fmul_algebraic(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
+    pub fn vector_reduce_fmul_reassoc(&mut self, acc: &'ll Value, src: &'ll Value) -> &'ll Value {
         unsafe {
             let instr = llvm::LLVMRustBuildVectorReduceFMul(self.llbuilder, acc, src);
-            llvm::LLVMRustSetAlgebraicMath(instr);
+            llvm::LLVMRustSetAllowReassoc(instr);
             instr
         }
     }
@@ -1404,22 +1395,6 @@ impl<'a, 'll, 'tcx> Builder<'a, 'll, 'tcx> {
     pub fn vector_reduce_fmax(&mut self, src: &'ll Value) -> &'ll Value {
         unsafe {
             llvm::LLVMRustBuildVectorReduceFMax(self.llbuilder, src, /*NoNaNs:*/ false)
-        }
-    }
-    pub fn vector_reduce_fmin_fast(&mut self, src: &'ll Value) -> &'ll Value {
-        unsafe {
-            let instr =
-                llvm::LLVMRustBuildVectorReduceFMin(self.llbuilder, src, /*NoNaNs:*/ true);
-            llvm::LLVMRustSetFastMath(instr);
-            instr
-        }
-    }
-    pub fn vector_reduce_fmax_fast(&mut self, src: &'ll Value) -> &'ll Value {
-        unsafe {
-            let instr =
-                llvm::LLVMRustBuildVectorReduceFMax(self.llbuilder, src, /*NoNaNs:*/ true);
-            llvm::LLVMRustSetFastMath(instr);
-            instr
         }
     }
     pub fn vector_reduce_min(&mut self, src: &'ll Value, is_signed: bool) -> &'ll Value {
@@ -1561,6 +1536,58 @@ impl<'a, 'll, 'tcx> Builder<'a, 'll, 'tcx> {
         unsafe {
             llvm::LLVMBuildLandingPad(self.llbuilder, ty, None, num_clauses as c_uint, UNNAMED)
         }
+    }
+
+    pub(crate) fn callbr(
+        &mut self,
+        llty: &'ll Type,
+        fn_attrs: Option<&CodegenFnAttrs>,
+        fn_abi: Option<&FnAbi<'tcx, Ty<'tcx>>>,
+        llfn: &'ll Value,
+        args: &[&'ll Value],
+        default_dest: &'ll BasicBlock,
+        indirect_dest: &[&'ll BasicBlock],
+        funclet: Option<&Funclet<'ll>>,
+    ) -> &'ll Value {
+        debug!("invoke {:?} with args ({:?})", llfn, args);
+
+        let args = self.check_call("callbr", llty, llfn, args);
+        let funclet_bundle = funclet.map(|funclet| funclet.bundle());
+        let funclet_bundle = funclet_bundle.as_ref().map(|b| &*b.raw);
+        let mut bundles: SmallVec<[_; 2]> = SmallVec::new();
+        if let Some(funclet_bundle) = funclet_bundle {
+            bundles.push(funclet_bundle);
+        }
+
+        // Emit CFI pointer type membership test
+        self.cfi_type_test(fn_attrs, fn_abi, llfn);
+
+        // Emit KCFI operand bundle
+        let kcfi_bundle = self.kcfi_operand_bundle(fn_attrs, fn_abi, llfn);
+        let kcfi_bundle = kcfi_bundle.as_ref().map(|b| &*b.raw);
+        if let Some(kcfi_bundle) = kcfi_bundle {
+            bundles.push(kcfi_bundle);
+        }
+
+        let callbr = unsafe {
+            llvm::LLVMRustBuildCallBr(
+                self.llbuilder,
+                llty,
+                llfn,
+                default_dest,
+                indirect_dest.as_ptr(),
+                indirect_dest.len() as c_uint,
+                args.as_ptr(),
+                args.len() as c_uint,
+                bundles.as_ptr(),
+                bundles.len() as c_uint,
+                UNNAMED,
+            )
+        };
+        if let Some(fn_abi) = fn_abi {
+            fn_abi.apply_attrs_callsite(self, callbr);
+        }
+        callbr
     }
 
     // Emits CFI pointer type membership tests.

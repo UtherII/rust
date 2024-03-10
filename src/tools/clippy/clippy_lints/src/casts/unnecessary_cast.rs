@@ -2,7 +2,7 @@ use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::numeric_literal::NumericLiteral;
 use clippy_utils::source::snippet_opt;
 use clippy_utils::visitors::{for_each_expr, Visitable};
-use clippy_utils::{get_parent_expr, get_parent_node, is_hir_ty_cfg_dependant, is_ty_alias, path_to_local};
+use clippy_utils::{get_parent_expr, is_hir_ty_cfg_dependant, is_ty_alias, path_to_local};
 use rustc_ast::{LitFloatType, LitIntType, LitKind};
 use rustc_errors::Applicability;
 use rustc_hir::def::{DefKind, Res};
@@ -151,13 +151,24 @@ pub(super) fn check<'tcx>(
             return false;
         }
 
+        // If the whole cast expression is a unary expression (`(*x as T)`) or an addressof
+        // expression (`(&x as T)`), then not surrounding the suggestion into a block risks us
+        // changing the precedence of operators if the cast expression is followed by an operation
+        // with higher precedence than the unary operator (`(*x as T).foo()` would become
+        // `*x.foo()`, which changes what the `*` applies on).
+        // The same is true if the expression encompassing the cast expression is a unary
+        // expression or an addressof expression.
+        let needs_block = matches!(cast_expr.kind, ExprKind::Unary(..) | ExprKind::AddrOf(..))
+            || get_parent_expr(cx, expr)
+                .map_or(false, |e| matches!(e.kind, ExprKind::Unary(..) | ExprKind::AddrOf(..)));
+
         span_lint_and_sugg(
             cx,
             UNNECESSARY_CAST,
             expr.span,
             &format!("casting to the same type is unnecessary (`{cast_from}` -> `{cast_to}`)"),
             "try",
-            if get_parent_expr(cx, expr).map_or(false, |e| matches!(e.kind, ExprKind::AddrOf(..))) {
+            if needs_block {
                 format!("{{ {cast_str} }}")
             } else {
                 cast_str
@@ -264,8 +275,7 @@ fn is_cast_from_ty_alias<'tcx>(cx: &LateContext<'tcx>, expr: impl Visitable<'tcx
                 }
             // Local usage
             } else if let Res::Local(hir_id) = res
-                && let Some(parent) = get_parent_node(cx.tcx, hir_id)
-                && let Node::Local(l) = parent
+                && let Node::Local(l) = cx.tcx.parent_hir_node(hir_id)
             {
                 if let Some(e) = l.init
                     && is_cast_from_ty_alias(cx, e, cast_from)

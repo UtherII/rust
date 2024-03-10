@@ -98,9 +98,6 @@ pub fn prebuilt_llvm_config(
     let out_dir = builder.llvm_out(target);
 
     let mut llvm_config_ret_dir = builder.llvm_out(builder.config.build);
-    if (!builder.config.build.is_msvc() || builder.ninja()) && !builder.config.llvm_from_ci {
-        llvm_config_ret_dir.push("build");
-    }
     llvm_config_ret_dir.push("bin");
     let build_llvm_config = llvm_config_ret_dir.join(exe("llvm-config", builder.config.build));
     let llvm_cmake_dir = out_dir.join("lib/cmake/llvm");
@@ -242,7 +239,7 @@ pub(crate) fn is_ci_llvm_modified(config: &Config) -> bool {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Llvm {
     pub target: TargetSelection,
 }
@@ -815,7 +812,7 @@ fn get_var(var_base: &str, host: &str, target: &str) -> Option<OsString> {
         .or_else(|| env::var_os(var_base))
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Lld {
     pub target: TargetSelection,
 }
@@ -937,7 +934,7 @@ impl Step for Lld {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Sanitizers {
     pub target: TargetSelection,
 }
@@ -1091,7 +1088,7 @@ fn supported_sanitizers(
         "x86_64-unknown-illumos" => common_libs("illumos", "x86_64", &["asan"]),
         "x86_64-pc-solaris" => common_libs("solaris", "x86_64", &["asan"]),
         "x86_64-unknown-linux-gnu" => {
-            common_libs("linux", "x86_64", &["asan", "lsan", "msan", "safestack", "tsan"])
+            common_libs("linux", "x86_64", &["asan", "dfsan", "lsan", "msan", "safestack", "tsan"])
         }
         "x86_64-unknown-linux-musl" => {
             common_libs("linux", "x86_64", &["asan", "lsan", "msan", "tsan"])
@@ -1147,7 +1144,7 @@ impl HashStamp {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrtBeginEnd {
     pub target: TargetSelection,
 }
@@ -1215,7 +1212,7 @@ impl Step for CrtBeginEnd {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Libunwind {
     pub target: TargetSelection,
 }

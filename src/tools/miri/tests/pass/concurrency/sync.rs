@@ -7,6 +7,10 @@ use std::sync::{Arc, Barrier, Condvar, Mutex, Once, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+// We are expecting to sleep for 10ms. How long of a sleep we are accepting?
+// Even with 1000ms we still see this test fail on macOS runners.
+const MAX_SLEEP_TIME_MS: u64 = 2000;
+
 // Check if Rust barriers are working.
 
 /// This test is taken from the Rust documentation.
@@ -63,10 +67,10 @@ fn check_conditional_variables_timed_wait_timeout() {
     let cvar = Condvar::new();
     let guard = lock.lock().unwrap();
     let now = Instant::now();
-    let (_guard, timeout) = cvar.wait_timeout(guard, Duration::from_millis(100)).unwrap();
+    let (_guard, timeout) = cvar.wait_timeout(guard, Duration::from_millis(10)).unwrap();
     assert!(timeout.timed_out());
     let elapsed_time = now.elapsed().as_millis();
-    assert!(100 <= elapsed_time && elapsed_time <= 1000);
+    assert!(10 <= elapsed_time && elapsed_time <= MAX_SLEEP_TIME_MS.into());
 }
 
 /// Test that signaling a conditional variable when waiting with a timeout works
@@ -79,12 +83,13 @@ fn check_conditional_variables_timed_wait_notimeout() {
     let guard = lock.lock().unwrap();
 
     let handle = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(100)); // Make sure the other thread is waiting by the time we call `notify`.
+        thread::sleep(Duration::from_millis(1)); // Make sure the other thread is waiting by the time we call `notify`.
         let (_lock, cvar) = &*pair2;
         cvar.notify_one();
     });
 
-    let (_guard, timeout) = cvar.wait_timeout(guard, Duration::from_millis(1000)).unwrap();
+    let (_guard, timeout) =
+        cvar.wait_timeout(guard, Duration::from_millis(MAX_SLEEP_TIME_MS)).unwrap();
     assert!(!timeout.timed_out());
     handle.join().unwrap();
 }
@@ -213,20 +218,21 @@ fn check_once() {
 fn park_timeout() {
     let start = Instant::now();
 
-    thread::park_timeout(Duration::from_millis(200));
+    thread::park_timeout(Duration::from_millis(10));
     // Normally, waiting in park/park_timeout may spuriously wake up early, but we
     // know Miri's timed synchronization primitives do not do that.
-    // We allow much longer sleeps as well since the macOS GHA runners seem very oversubscribed
-    // and sometimes just pause for 1 second or more.
     let elapsed = start.elapsed();
-    assert!((200..2000).contains(&elapsed.as_millis()), "bad sleep time: {elapsed:?}");
+    assert!(
+        (10..MAX_SLEEP_TIME_MS.into()).contains(&elapsed.as_millis()),
+        "bad sleep time: {elapsed:?}"
+    );
 }
 
 fn park_unpark() {
     let t1 = thread::current();
     let t2 = thread::spawn(move || {
         thread::park();
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(10));
         t1.unpark();
     });
 
@@ -236,10 +242,11 @@ fn park_unpark() {
     thread::park();
     // Normally, waiting in park/park_timeout may spuriously wake up early, but we
     // know Miri's timed synchronization primitives do not do that.
-    // We allow much longer sleeps as well since the macOS GHA runners seem very oversubscribed
-    // and sometimes just pause for 1 second or more.
     let elapsed = start.elapsed();
-    assert!((200..2000).contains(&elapsed.as_millis()), "bad sleep time: {elapsed:?}");
+    assert!(
+        (10..MAX_SLEEP_TIME_MS.into()).contains(&elapsed.as_millis()),
+        "bad sleep time: {elapsed:?}"
+    );
 
     t2.join().unwrap();
 }

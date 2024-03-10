@@ -239,8 +239,6 @@ hir_analysis_missing_one_of_trait_item = not all trait items implemented, missin
     .label = missing one of `{$missing_items_msg}` in implementation
     .note = required because of this annotation
 
-hir_analysis_missing_tilde_const = missing `~const` qualifier for specialization
-
 hir_analysis_missing_trait_item = not all trait items implemented, missing: `{$missing_items_msg}`
     .label = missing `{$missing_items_msg}` in implementation
 
@@ -313,6 +311,10 @@ hir_analysis_only_current_traits_pointer_sugg = consider introducing a new wrapp
 hir_analysis_only_current_traits_primitive = only traits defined in the current crate can be implemented for primitive types
 
 hir_analysis_only_current_traits_ty = `{$ty}` is not defined in the current crate
+
+hir_analysis_opaque_captures_higher_ranked_lifetime = `impl Trait` cannot capture {$bad_place}
+    .label = `impl Trait` implicitly captures all lifetimes in scope
+    .note = lifetime declared here
 
 hir_analysis_paren_sugar_attribute = the `#[rustc_paren_sugar]` attribute is a temporary means of controlling which traits can use parenthetical notation
     .help = add `#![feature(unboxed_closures)]` to the crate attributes to use it

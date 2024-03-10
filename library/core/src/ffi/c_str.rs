@@ -1,12 +1,20 @@
+//! [`CStr`] and its related types.
+
 use crate::cmp::Ordering;
 use crate::error::Error;
 use crate::ffi::c_char;
 use crate::fmt;
 use crate::intrinsics;
 use crate::ops;
+use crate::ptr::addr_of;
 use crate::slice;
 use crate::slice::memchr;
 use crate::str;
+
+// FIXME: because this is doc(inline)d, we *have* to use intra-doc links because the actual link
+//   depends on where the item is being documented. however, since this is libcore, we can't
+//   actually reference libstd or liballoc in intra-doc links. so, the best we can do is remove the
+//   links to `CString` and `String` for now until a solution is developed
 
 /// Representation of a borrowed C string.
 ///
@@ -14,9 +22,9 @@ use crate::str;
 /// array of bytes. It can be constructed safely from a <code>&[[u8]]</code>
 /// slice, or unsafely from a raw `*const c_char`. It can then be
 /// converted to a Rust <code>&[str]</code> by performing UTF-8 validation, or
-/// into an owned [`CString`].
+/// into an owned `CString`.
 ///
-/// `&CStr` is to [`CString`] as <code>&[str]</code> is to [`String`]: the former
+/// `&CStr` is to `CString` as <code>&[str]</code> is to `String`: the former
 /// in each pair are borrowed references; the latter are owned
 /// strings.
 ///
@@ -24,9 +32,6 @@ use crate::str;
 /// notwithstanding) and is not recommended to be placed in the signatures of FFI functions.
 /// Instead, safe wrappers of FFI functions may leverage the unsafe [`CStr::from_ptr`] constructor
 /// to provide a safe interface to other consumers.
-///
-/// [`CString`]: ../../std/ffi/struct.CString.html
-/// [`String`]: ../../std/string/struct.String.html
 ///
 /// # Examples
 ///
@@ -124,10 +129,13 @@ enum FromBytesWithNulErrorKind {
     NotNulTerminated,
 }
 
+// FIXME: const stability attributes should not be required here, I think
 impl FromBytesWithNulError {
+    #[rustc_const_stable(feature = "const_cstr_methods", since = "1.72.0")]
     const fn interior_nul(pos: usize) -> FromBytesWithNulError {
         FromBytesWithNulError { kind: FromBytesWithNulErrorKind::InteriorNul(pos) }
     }
+    #[rustc_const_stable(feature = "const_cstr_methods", since = "1.72.0")]
     const fn not_nul_terminated() -> FromBytesWithNulError {
         FromBytesWithNulError { kind: FromBytesWithNulErrorKind::NotNulTerminated }
     }
@@ -427,10 +435,13 @@ impl CStr {
             unsafe { &*(bytes as *const [u8] as *const CStr) }
         }
 
+        #[cfg_attr(not(bootstrap), allow(unused_unsafe))] // on bootstrap bump, remove unsafe block
         // SAFETY: The const and runtime versions have identical behavior
         // unless the safety contract of `from_bytes_with_nul_unchecked` is
         // violated, which is UB.
-        unsafe { intrinsics::const_eval_select((bytes,), const_impl, rt_impl) }
+        unsafe {
+            intrinsics::const_eval_select((bytes,), const_impl, rt_impl)
+        }
     }
 
     /// Returns the inner pointer to this C string.
@@ -603,7 +614,7 @@ impl CStr {
     pub const fn to_bytes_with_nul(&self) -> &[u8] {
         // SAFETY: Transmuting a slice of `c_char`s to a slice of `u8`s
         // is safe on all supported targets.
-        unsafe { &*(&self.inner as *const [c_char] as *const [u8]) }
+        unsafe { &*(addr_of!(self.inner) as *const [u8]) }
     }
 
     /// Yields a <code>&[str]</code> slice if the `CStr` contains valid UTF-8.
@@ -718,6 +729,9 @@ const unsafe fn const_strlen(ptr: *const c_char) -> usize {
         unsafe { strlen(s) }
     }
 
+    #[cfg_attr(not(bootstrap), allow(unused_unsafe))] // on bootstrap bump, remove unsafe block
     // SAFETY: the two functions always provide equivalent functionality
-    unsafe { intrinsics::const_eval_select((ptr,), strlen_ct, strlen_rt) }
+    unsafe {
+        intrinsics::const_eval_select((ptr,), strlen_ct, strlen_rt)
+    }
 }

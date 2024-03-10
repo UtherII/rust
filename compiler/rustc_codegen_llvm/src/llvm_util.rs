@@ -192,19 +192,22 @@ impl<'a> IntoIterator for LLVMFeature<'a> {
 // to LLVM or the feature detection code will walk past the end of the feature
 // array, leading to crashes.
 //
-// To find a list of LLVM's names, check llvm-project/llvm/include/llvm/Support/*TargetParser.def
-// where the * matches the architecture's name
-//
-// For targets not present in the above location, see llvm-project/llvm/lib/Target/{ARCH}/*.td
+// To find a list of LLVM's names, see llvm-project/llvm/lib/Target/{ARCH}/*.td
 // where `{ARCH}` is the architecture name. Look for instances of `SubtargetFeature`.
 //
-// Beware to not use the llvm github project for this, but check the git submodule
-// found in src/llvm-project
+// Check the current rustc fork of LLVM in the repo at https://github.com/rust-lang/llvm-project/.
+// The commit in use can be found via the `llvm-project` submodule in https://github.com/rust-lang/rust/tree/master/src
 // Though note that Rust can also be build with an external precompiled version of LLVM
 // which might lead to failures if the oldest tested / supported LLVM version
 // doesn't yet support the relevant intrinsics
 pub fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> LLVMFeature<'a> {
-    let arch = if sess.target.arch == "x86_64" { "x86" } else { &*sess.target.arch };
+    let arch = if sess.target.arch == "x86_64" {
+        "x86"
+    } else if sess.target.arch == "arm64ec" {
+        "aarch64"
+    } else {
+        &*sess.target.arch
+    };
     match (arch, s) {
         ("x86", "sse4.2") => {
             LLVMFeature::with_dependency("sse4.2", TargetFeatureFoldStrength::EnableOnly("crc32"))
@@ -435,7 +438,7 @@ pub(crate) fn print(req: &PrintRequest, mut out: &mut dyn PrintBackendInfo, sess
                     &tm,
                     cpu_cstring.as_ptr(),
                     callback,
-                    &mut out as *mut &mut dyn PrintBackendInfo as *mut c_void,
+                    std::ptr::addr_of_mut!(out) as *mut c_void,
                 );
             }
         }

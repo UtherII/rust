@@ -5,7 +5,7 @@ use either::Either;
 use limit::Limit;
 use mbe::{syntax_node_to_token_tree, ValueResult};
 use rustc_hash::FxHashSet;
-use span::SyntaxContextId;
+use span::{AstIdMap, SyntaxContextData, SyntaxContextId};
 use syntax::{
     ast::{self, HasAttrs},
     AstNode, Parse, SyntaxError, SyntaxNode, SyntaxToken, T,
@@ -13,16 +13,12 @@ use syntax::{
 use triomphe::Arc;
 
 use crate::{
-    ast_id_map::AstIdMap,
     attrs::collect_attrs,
     builtin_attr_macro::pseudo_derive_attr_expansion,
     builtin_fn_macro::EagerExpander,
     declarative::DeclarativeMacroExpander,
     fixup::{self, reverse_fixups, SyntaxFixupUndoInfo},
-    hygiene::{
-        span_with_call_site_ctxt, span_with_def_site_ctxt, span_with_mixed_site_ctxt,
-        SyntaxContextData,
-    },
+    hygiene::{span_with_call_site_ctxt, span_with_def_site_ctxt, span_with_mixed_site_ctxt},
     proc_macro::ProcMacros,
     span_map::{RealSpanMap, SpanMap, SpanMapRef},
     tt, AstId, BuiltinAttrExpander, BuiltinDeriveExpander, BuiltinFnLikeExpander,
@@ -61,7 +57,6 @@ pub trait ExpandDatabase: SourceDatabase {
     #[salsa::input]
     fn proc_macros(&self) -> Arc<ProcMacros>;
 
-    #[salsa::invoke(AstIdMap::new)]
     fn ast_id_map(&self, file_id: HirFileId) -> Arc<AstIdMap>;
 
     /// Main public API -- parses a hir file, not caring whether it's a real
@@ -220,11 +215,6 @@ pub fn expand_speculative(
         MacroDefKind::BuiltInAttr(BuiltinAttrExpander::Derive, _) => {
             pseudo_derive_attr_expansion(&tt, attr_arg.as_ref()?, loc.call_site)
         }
-        MacroDefKind::BuiltInDerive(expander, ..) => {
-            // this cast is a bit sus, can we avoid losing the typedness here?
-            let adt = ast::Adt::cast(speculative_args.clone()).unwrap();
-            expander.expand(db, actual_macro_call, &adt, span_map)
-        }
         MacroDefKind::Declarative(it) => db.decl_macro_expander(loc.krate, it).expand_unhygienic(
             db,
             tt,
@@ -232,6 +222,9 @@ pub fn expand_speculative(
             loc.call_site,
         ),
         MacroDefKind::BuiltIn(it, _) => it.expand(db, actual_macro_call, &tt).map_err(Into::into),
+        MacroDefKind::BuiltInDerive(it, ..) => {
+            it.expand(db, actual_macro_call, &tt).map_err(Into::into)
+        }
         MacroDefKind::BuiltInEager(it, _) => {
             it.expand(db, actual_macro_call, &tt).map_err(Into::into)
         }
@@ -254,6 +247,10 @@ pub fn expand_speculative(
             (t.kind() != token_to_map.kind()) as u8 + (t.text() != token_to_map.text()) as u8
         })?;
     Some((node.syntax_node(), token))
+}
+
+fn ast_id_map(db: &dyn ExpandDatabase, file_id: span::HirFileId) -> triomphe::Arc<AstIdMap> {
+    triomphe::Arc::new(AstIdMap::from_source(&db.parse_or_expand(file_id)))
 }
 
 fn parse_or_expand(db: &dyn ExpandDatabase, file_id: HirFileId) -> SyntaxNode {
@@ -304,7 +301,7 @@ fn parse_macro_expansion_error(
     macro_call_id: MacroCallId,
 ) -> ExpandResult<Box<[SyntaxError]>> {
     db.parse_macro_expansion(MacroFileId { macro_call_id })
-        .map(|it| it.0.errors().to_vec().into_boxed_slice())
+        .map(|it| it.0.errors().into_boxed_slice())
 }
 
 pub(crate) fn parse_with_map(
@@ -322,6 +319,7 @@ pub(crate) fn parse_with_map(
     }
 }
 
+// FIXME: for derive attributes, this will return separate copies of the same structures!
 fn macro_arg(
     db: &dyn ExpandDatabase,
     id: MacroCallId,
@@ -446,7 +444,7 @@ fn macro_arg(
 
         if matches!(loc.def.kind, MacroDefKind::BuiltInEager(..)) {
             match parse.errors() {
-                [] => ValueResult::ok((Arc::new(tt), undo_info)),
+                errors if errors.is_empty() => ValueResult::ok((Arc::new(tt), undo_info)),
                 errors => ValueResult::new(
                     (Arc::new(tt), undo_info),
                     // Box::<[_]>::from(res.errors()), not stable yet
@@ -527,16 +525,6 @@ fn macro_expand(
 
     let ExpandResult { value: tt, mut err } = match loc.def.kind {
         MacroDefKind::ProcMacro(..) => return db.expand_proc_macro(macro_call_id).map(CowArc::Arc),
-        MacroDefKind::BuiltInDerive(expander, ..) => {
-            let (root, map) = parse_with_map(db, loc.kind.file_id());
-            let root = root.syntax_node();
-            let MacroCallKind::Derive { ast_id, .. } = loc.kind else { unreachable!() };
-            let node = ast_id.to_ptr(db).to_node(&root);
-
-            // FIXME: Use censoring
-            let _censor = censor_for_macro_input(&loc, node.syntax());
-            expander.expand(db, macro_call_id, &node, map.as_ref())
-        }
         _ => {
             let ValueResult { value: (macro_arg, undo_info), err } = db.macro_arg(macro_call_id);
             let format_parse_err = |err: Arc<Box<[SyntaxError]>>| {
@@ -569,6 +557,9 @@ fn macro_expand(
                         value: CowArc::Arc(macro_arg.clone()),
                         err: err.map(format_parse_err),
                     };
+                }
+                MacroDefKind::BuiltInDerive(it, _) => {
+                    it.expand(db, macro_call_id, arg).map_err(Into::into)
                 }
                 MacroDefKind::BuiltInEager(it, _) => {
                     it.expand(db, macro_call_id, arg).map_err(Into::into)

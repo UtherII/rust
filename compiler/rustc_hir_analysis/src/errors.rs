@@ -2,8 +2,7 @@
 
 use crate::fluent_generated as fluent;
 use rustc_errors::{
-    codes::*, Applicability, DiagCtxt, DiagnosticBuilder, EmissionGuarantee, IntoDiagnostic, Level,
-    MultiSpan,
+    codes::*, Applicability, Diag, DiagCtxt, EmissionGuarantee, IntoDiagnostic, Level, MultiSpan,
 };
 use rustc_macros::{Diagnostic, LintDiagnostic, Subdiagnostic};
 use rustc_middle::ty::Ty;
@@ -359,8 +358,8 @@ pub struct MissingTypeParams {
 // Manual implementation of `IntoDiagnostic` to be able to call `span_to_snippet`.
 impl<'a, G: EmissionGuarantee> IntoDiagnostic<'a, G> for MissingTypeParams {
     #[track_caller]
-    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> DiagnosticBuilder<'a, G> {
-        let mut err = DiagnosticBuilder::new(dcx, level, fluent::hir_analysis_missing_type_params);
+    fn into_diagnostic(self, dcx: &'a DiagCtxt, level: Level) -> Diag<'a, G> {
+        let mut err = Diag::new(dcx, level, fluent::hir_analysis_missing_type_params);
         err.span(self.span);
         err.code(E0393);
         err.arg("parameterCount", self.missing_type_params.len());
@@ -1006,13 +1005,6 @@ pub(crate) struct StaticSpecialize {
 }
 
 #[derive(Diagnostic)]
-#[diag(hir_analysis_missing_tilde_const)]
-pub(crate) struct MissingTildeConst {
-    #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
 pub(crate) enum DropImplPolarity {
     #[diag(hir_analysis_drop_impl_negative)]
     Negative {
@@ -1614,4 +1606,16 @@ pub enum UnnamedFieldsRepr<'a> {
 pub struct UnnamedFieldsReprFieldDefined {
     #[primary_span]
     pub span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(hir_analysis_opaque_captures_higher_ranked_lifetime, code = E0657)]
+pub struct OpaqueCapturesHigherRankedLifetime {
+    #[primary_span]
+    pub span: Span,
+    #[label]
+    pub label: Option<Span>,
+    #[note]
+    pub decl_span: Span,
+    pub bad_place: &'static str,
 }

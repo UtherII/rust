@@ -1,11 +1,16 @@
 //! Run all tests in a project, similar to `cargo test`, but using the mir interpreter.
 
+use std::convert::identity;
+use std::thread::Builder;
+use std::time::{Duration, Instant};
 use std::{cell::RefCell, fs::read_to_string, panic::AssertUnwindSafe, path::PathBuf};
 
-use hir::{Change, Crate};
+use hir::{ChangeWithProcMacros, Crate};
 use ide::{AnalysisHost, DiagnosticCode, DiagnosticsConfig};
+use itertools::Either;
 use profile::StopWatch;
-use project_model::{CargoConfig, ProjectWorkspace, RustLibSource, Sysroot};
+use project_model::target_data_layout::RustcDataLayoutConfig;
+use project_model::{target_data_layout, CargoConfig, ProjectWorkspace, RustLibSource, Sysroot};
 
 use load_cargo::{load_workspace, LoadCargoConfig, ProcMacroServerChoice};
 use rustc_hash::FxHashMap;
@@ -60,23 +65,31 @@ impl Tester {
         std::fs::write(&tmp_file, "")?;
         let cargo_config =
             CargoConfig { sysroot: Some(RustLibSource::Discover), ..Default::default() };
+
+        let sysroot =
+            Ok(Sysroot::discover(tmp_file.parent().unwrap(), &cargo_config.extra_env, false)
+                .unwrap());
+        let data_layout = target_data_layout::get(
+            RustcDataLayoutConfig::Rustc(sysroot.as_ref().ok()),
+            None,
+            &cargo_config.extra_env,
+        );
+
         let workspace = ProjectWorkspace::DetachedFiles {
             files: vec![tmp_file.clone()],
-            sysroot: Ok(Sysroot::discover(
-                tmp_file.parent().unwrap(),
-                &cargo_config.extra_env,
-                false,
-            )
-            .unwrap()),
+            sysroot,
             rustc_cfg: vec![],
+            toolchain: None,
+            target_layout: data_layout.map(Arc::from).map_err(|it| Arc::from(it.to_string())),
         };
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: false,
             with_proc_macro_server: ProcMacroServerChoice::Sysroot,
             prefill_caches: false,
         };
-        let (host, _vfs, _proc_macro) =
+        let (db, _vfs, _proc_macro) =
             load_workspace(workspace, &cargo_config.extra_env, &load_cargo_config)?;
+        let host = AnalysisHost::with_database(db);
         let db = host.raw_database();
         let krates = Crate::all(db);
         let root_crate = krates.iter().cloned().find(|krate| krate.origin(db).is_local()).unwrap();
@@ -92,6 +105,7 @@ impl Tester {
     }
 
     fn test(&mut self, p: PathBuf) {
+        println!("{}", p.display());
         if p.parent().unwrap().file_name().unwrap() == "auxiliary" {
             // These are not tests
             return;
@@ -108,7 +122,7 @@ impl Tester {
             FxHashMap::default()
         };
         let text = read_to_string(&p).unwrap();
-        let mut change = Change::new();
+        let mut change = ChangeWithProcMacros::new();
         // Ignore unstable tests, since they move too fast and we do not intend to support all of them.
         let mut ignore_test = text.contains("#![feature");
         // Ignore test with extern crates, as this infra don't support them yet.
@@ -124,15 +138,44 @@ impl Tester {
         self.host.apply_change(change);
         let diagnostic_config = DiagnosticsConfig::test_sample();
 
+        let res = std::thread::scope(|s| {
+            let worker = Builder::new()
+                .stack_size(40 * 1024 * 1024)
+                .spawn_scoped(s, {
+                    let diagnostic_config = &diagnostic_config;
+                    let main = std::thread::current();
+                    let analysis = self.host.analysis();
+                    let root_file = self.root_file;
+                    move || {
+                        let res = std::panic::catch_unwind(move || {
+                            analysis.diagnostics(
+                                diagnostic_config,
+                                ide::AssistResolveStrategy::None,
+                                root_file,
+                            )
+                        });
+                        main.unpark();
+                        res
+                    }
+                })
+                .unwrap();
+
+            let timeout = Duration::from_secs(5);
+            let now = Instant::now();
+            while now.elapsed() <= timeout && !worker.is_finished() {
+                std::thread::park_timeout(timeout - now.elapsed());
+            }
+
+            if !worker.is_finished() {
+                // attempt to cancel the worker, won't work for chalk hangs unfortunately
+                self.host.request_cancellation();
+            }
+            worker.join().and_then(identity)
+        });
         let mut actual = FxHashMap::default();
-        let panicked = match std::panic::catch_unwind(|| {
-            self.host
-                .analysis()
-                .diagnostics(&diagnostic_config, ide::AssistResolveStrategy::None, self.root_file)
-                .unwrap()
-        }) {
-            Err(e) => Some(e),
-            Ok(diags) => {
+        let panicked = match res {
+            Err(e) => Some(Either::Left(e)),
+            Ok(Ok(diags)) => {
                 for diag in diags {
                     if !matches!(diag.code, DiagnosticCode::RustcHardError(_)) {
                         continue;
@@ -144,6 +187,7 @@ impl Tester {
                 }
                 None
             }
+            Ok(Err(e)) => Some(Either::Right(e)),
         };
         // Ignore tests with diagnostics that we don't emit.
         ignore_test |= expected.keys().any(|k| !SUPPORTED_DIAGNOSTICS.contains(k));
@@ -151,14 +195,19 @@ impl Tester {
             println!("{p:?} IGNORE");
             self.ignore_count += 1;
         } else if let Some(panic) = panicked {
-            if let Some(msg) = panic
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-            {
-                println!("{msg:?} ")
+            match panic {
+                Either::Left(panic) => {
+                    if let Some(msg) = panic
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                    {
+                        println!("{msg:?} ")
+                    }
+                    println!("{p:?} PANIC");
+                }
+                Either::Right(_) => println!("{p:?} CANCELLED"),
             }
-            println!("PANIC");
             self.fail_count += 1;
         } else if actual == expected {
             println!("{p:?} PASS");
@@ -228,6 +277,7 @@ impl flags::RustcTests {
     pub fn run(self) -> Result<()> {
         let mut tester = Tester::new()?;
         let walk_dir = WalkDir::new(self.rustc_repo.join("tests/ui"));
+        eprintln!("Running tests for tests/ui");
         for i in walk_dir {
             let i = i?;
             let p = i.into_path();

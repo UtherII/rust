@@ -904,15 +904,16 @@ pub(crate) fn goto_definition_response(
     if snap.config.location_link() {
         let links = targets
             .into_iter()
+            .unique_by(|nav| (nav.file_id, nav.full_range, nav.focus_range))
             .map(|nav| location_link(snap, src, nav))
             .collect::<Cancellable<Vec<_>>>()?;
         Ok(links.into())
     } else {
         let locations = targets
             .into_iter()
-            .map(|nav| {
-                location(snap, FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() })
-            })
+            .map(|nav| FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() })
+            .unique()
+            .map(|range| location(snap, range))
             .collect::<Cancellable<Vec<_>>>()?;
         Ok(locations.into())
     }
@@ -1001,10 +1002,8 @@ fn merge_text_and_snippet_edits(
             let mut new_text = current_indel.insert;
 
             // find which snippet bits need to be escaped
-            let escape_places = new_text
-                .rmatch_indices(['\\', '$', '{', '}'])
-                .map(|(insert, _)| insert)
-                .collect_vec();
+            let escape_places =
+                new_text.rmatch_indices(['\\', '$', '}']).map(|(insert, _)| insert).collect_vec();
             let mut escape_places = escape_places.into_iter().peekable();
             let mut escape_prior_bits = |new_text: &mut String, up_to: usize| {
                 for before in escape_places.peeking_take_while(|insert| *insert >= up_to) {
@@ -1497,6 +1496,32 @@ pub(crate) fn code_lens(
         }
     }
     Ok(())
+}
+
+pub(crate) fn test_item(
+    snap: &GlobalStateSnapshot,
+    test_item: ide::TestItem,
+    line_index: Option<&LineIndex>,
+) -> lsp_ext::TestItem {
+    lsp_ext::TestItem {
+        id: test_item.id,
+        label: test_item.label,
+        kind: match test_item.kind {
+            ide::TestItemKind::Crate => lsp_ext::TestItemKind::Package,
+            ide::TestItemKind::Module => lsp_ext::TestItemKind::Module,
+            ide::TestItemKind::Function => lsp_ext::TestItemKind::Test,
+        },
+        can_resolve_children: matches!(
+            test_item.kind,
+            ide::TestItemKind::Crate | ide::TestItemKind::Module
+        ),
+        parent: test_item.parent,
+        text_document: test_item
+            .file
+            .map(|f| lsp_types::TextDocumentIdentifier { uri: url(snap, f) }),
+        range: line_index.and_then(|l| Some(range(l, test_item.text_range?))),
+        runnable: test_item.runnable.and_then(|r| runnable(snap, r).ok()),
+    }
 }
 
 pub(crate) mod command {
@@ -2175,7 +2200,7 @@ fn bar(_: usize) {}
                                 character: 0,
                             },
                         },
-                        new_text: "\\$${1:ab\\{\\}\\$c\\\\d}ef",
+                        new_text: "\\$${1:ab{\\}\\$c\\\\d}ef",
                         insert_text_format: Some(
                             Snippet,
                         ),
@@ -2271,7 +2296,7 @@ struct ProcMacro {
                                 character: 5,
                             },
                         },
-                        new_text: "$0disabled = false;\n    ProcMacro \\{\n        disabled,\n    \\}",
+                        new_text: "$0disabled = false;\n    ProcMacro {\n        disabled,\n    \\}",
                         insert_text_format: Some(
                             Snippet,
                         ),
@@ -2335,7 +2360,7 @@ struct P {
                                 character: 5,
                             },
                         },
-                        new_text: "$0disabled = false;\n    ProcMacro \\{\n        disabled,\n    \\}",
+                        new_text: "$0disabled = false;\n    ProcMacro {\n        disabled,\n    \\}",
                         insert_text_format: Some(
                             Snippet,
                         ),
@@ -2400,7 +2425,7 @@ struct ProcMacro {
                                 character: 5,
                             },
                         },
-                        new_text: "${0:disabled} = false;\n    ProcMacro \\{\n        disabled,\n    \\}",
+                        new_text: "${0:disabled} = false;\n    ProcMacro {\n        disabled,\n    \\}",
                         insert_text_format: Some(
                             Snippet,
                         ),
@@ -2465,7 +2490,7 @@ struct P {
                                 character: 5,
                             },
                         },
-                        new_text: "${0:disabled} = false;\n    ProcMacro \\{\n        disabled,\n    \\}",
+                        new_text: "${0:disabled} = false;\n    ProcMacro {\n        disabled,\n    \\}",
                         insert_text_format: Some(
                             Snippet,
                         ),

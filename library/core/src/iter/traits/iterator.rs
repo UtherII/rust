@@ -28,42 +28,11 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
 #[rustc_on_unimplemented(
     on(
         _Self = "core::ops::range::RangeTo<Idx>",
-        label = "if you meant to iterate until a value, add a starting value",
-        note = "`..end` is a `RangeTo`, which cannot be iterated on; you might have meant to have a \
-              bounded `Range`: `0..end`"
+        note = "you might have meant to use a bounded `Range`"
     ),
     on(
         _Self = "core::ops::range::RangeToInclusive<Idx>",
-        label = "if you meant to iterate until a value (including it), add a starting value",
-        note = "`..=end` is a `RangeToInclusive`, which cannot be iterated on; you might have meant \
-              to have a bounded `RangeInclusive`: `0..=end`"
-    ),
-    on(
-        _Self = "[]",
-        label = "`{Self}` is not an iterator; try calling `.into_iter()` or `.iter()`"
-    ),
-    on(_Self = "&[]", label = "`{Self}` is not an iterator; try calling `.iter()`"),
-    on(
-        _Self = "alloc::vec::Vec<T, A>",
-        label = "`{Self}` is not an iterator; try calling `.into_iter()` or `.iter()`"
-    ),
-    on(
-        _Self = "&str",
-        label = "`{Self}` is not an iterator; try calling `.chars()` or `.bytes()`"
-    ),
-    on(
-        _Self = "alloc::string::String",
-        label = "`{Self}` is not an iterator; try calling `.chars()` or `.bytes()`"
-    ),
-    on(
-        _Self = "{integral}",
-        note = "if you want to iterate between `start` until a value `end`, use the exclusive range \
-              syntax `start..end` or the inclusive range syntax `start..=end`"
-    ),
-    on(
-        _Self = "{float}",
-        note = "if you want to iterate between `start` until a value `end`, use the exclusive range \
-              syntax `start..end` or the inclusive range syntax `start..=end`"
+        note = "you might have meant to use a bounded `RangeInclusive`"
     ),
     label = "`{Self}` is not an iterator",
     message = "`{Self}` is not an iterator"
@@ -304,7 +273,7 @@ pub trait Iterator {
     /// times until [`None`] is encountered.
     ///
     /// `advance_by(n)` will return `Ok(())` if the iterator successfully advances by
-    /// `n` elements, or a `Err(NonZeroUsize)` with value `k` if [`None`] is encountered,
+    /// `n` elements, or a `Err(NonZero<usize>)` with value `k` if [`None`] is encountered,
     /// where `k` is remaining number of steps that could not be advanced because the iterator ran out.
     /// If `self` is empty and `n` is non-zero, then this returns `Err(n)`.
     /// Otherwise, `k` is always less than `n`.
@@ -319,8 +288,8 @@ pub trait Iterator {
     /// # Examples
     ///
     /// ```
-    /// #![feature(iter_advance_by)]
-    /// use std::num::NonZeroUsize;
+    /// #![feature(generic_nonzero, iter_advance_by)]
+    /// use std::num::NonZero;
     ///
     /// let a = [1, 2, 3, 4];
     /// let mut iter = a.iter();
@@ -328,7 +297,7 @@ pub trait Iterator {
     /// assert_eq!(iter.advance_by(2), Ok(()));
     /// assert_eq!(iter.next(), Some(&3));
     /// assert_eq!(iter.advance_by(0), Ok(()));
-    /// assert_eq!(iter.advance_by(100), Err(NonZeroUsize::new(99).unwrap())); // only `&4` was skipped
+    /// assert_eq!(iter.advance_by(100), Err(NonZero::new(99).unwrap())); // only `&4` was skipped
     /// ```
     #[inline]
     #[unstable(feature = "iter_advance_by", reason = "recently added", issue = "77404")]
@@ -2967,17 +2936,18 @@ pub trait Iterator {
     /// assert!(result.is_err());
     /// ```
     ///
-    /// This also supports other types which implement `Try`, not just `Result`.
-    /// ```
-    /// #![feature(try_find)]
+    /// This also supports other types which implement [`Try`], not just [`Result`].
     ///
-    /// use std::num::NonZeroU32;
-    /// let a = [3, 5, 7, 4, 9, 0, 11];
-    /// let result = a.iter().try_find(|&&x| NonZeroU32::new(x).map(|y| y.is_power_of_two()));
+    /// ```
+    /// #![feature(generic_nonzero, try_find)]
+    /// use std::num::NonZero;
+    ///
+    /// let a = [3, 5, 7, 4, 9, 0, 11u32];
+    /// let result = a.iter().try_find(|&&x| NonZero::new(x).map(|y| y.is_power_of_two()));
     /// assert_eq!(result, Some(Some(&4)));
-    /// let result = a.iter().take(3).try_find(|&&x| NonZeroU32::new(x).map(|y| y.is_power_of_two()));
+    /// let result = a.iter().take(3).try_find(|&&x| NonZero::new(x).map(|y| y.is_power_of_two()));
     /// assert_eq!(result, Some(None));
-    /// let result = a.iter().rev().try_find(|&&x| NonZeroU32::new(x).map(|y| y.is_power_of_two()));
+    /// let result = a.iter().rev().try_find(|&&x| NonZero::new(x).map(|y| y.is_power_of_two()));
     /// assert_eq!(result, None);
     /// ```
     #[inline]

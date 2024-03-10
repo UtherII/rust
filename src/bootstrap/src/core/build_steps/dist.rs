@@ -25,7 +25,6 @@ use crate::core::build_steps::llvm;
 use crate::core::build_steps::tool::{self, Tool};
 use crate::core::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
 use crate::core::config::TargetSelection;
-use crate::utils::cache::{Interned, INTERNER};
 use crate::utils::channel;
 use crate::utils::helpers::{exe, is_dylib, output, t, target_supports_cranelift_backend, timeit};
 use crate::utils::tarball::{GeneratedTarball, OverlayKind, Tarball};
@@ -50,7 +49,7 @@ fn should_build_extended_tool(builder: &Builder<'_>, tool: &str) -> bool {
     builder.config.tools.as_ref().map_or(true, |tools| tools.contains(tool))
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Docs {
     pub host: TargetSelection,
 }
@@ -83,7 +82,7 @@ impl Step for Docs {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct JsonDocs {
     pub host: TargetSelection,
 }
@@ -121,7 +120,7 @@ impl Step for JsonDocs {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct RustcDocs {
     pub host: TargetSelection,
 }
@@ -129,6 +128,7 @@ pub struct RustcDocs {
 impl Step for RustcDocs {
     type Output = Option<GeneratedTarball>;
     const DEFAULT: bool = true;
+    const ONLY_HOSTS: bool = true;
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
@@ -308,7 +308,7 @@ fn make_win_dist(
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Mingw {
     pub host: TargetSelection,
 }
@@ -348,7 +348,7 @@ impl Step for Mingw {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Rustc {
     pub compiler: Compiler,
 }
@@ -476,7 +476,7 @@ impl Step for Rustc {
             let man_src = builder.src.join("src/doc/man");
             let man_dst = image.join("share/man/man1");
 
-            // don't use our `bootstrap::{copy, cp_r}`, because those try
+            // don't use our `bootstrap::{copy_internal, cp_r}`, because those try
             // to hardlink, and we don't want to edit the source templates
             for file_entry in builder.read_dir(&man_src) {
                 let page_src = file_entry.path();
@@ -488,8 +488,7 @@ impl Step for Rustc {
             }
 
             // Debugger scripts
-            builder
-                .ensure(DebuggerScripts { sysroot: INTERNER.intern_path(image.to_owned()), host });
+            builder.ensure(DebuggerScripts { sysroot: image.to_owned(), host });
 
             // Misc license info
             let cp = |file: &str| {
@@ -503,9 +502,9 @@ impl Step for Rustc {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct DebuggerScripts {
-    pub sysroot: Interned<PathBuf>,
+    pub sysroot: PathBuf,
     pub host: TargetSelection,
 }
 
@@ -617,7 +616,7 @@ fn copy_target_libs(builder: &Builder<'_>, target: TargetSelection, image: &Path
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Std {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -664,7 +663,7 @@ impl Step for Std {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct RustcDev {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -723,7 +722,7 @@ impl Step for RustcDev {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Analysis {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -870,7 +869,7 @@ fn copy_src_dirs(
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Src;
 
 impl Step for Src {
@@ -931,7 +930,7 @@ impl Step for Src {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct PlainSourceTarball;
 
 impl Step for PlainSourceTarball {
@@ -1031,7 +1030,7 @@ impl Step for PlainSourceTarball {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Cargo {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1080,7 +1079,7 @@ impl Step for Cargo {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Rls {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1122,7 +1121,7 @@ impl Step for Rls {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct RustAnalyzer {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1164,7 +1163,7 @@ impl Step for RustAnalyzer {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Clippy {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1212,7 +1211,7 @@ impl Step for Clippy {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Miri {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1263,10 +1262,10 @@ impl Step for Miri {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct CodegenBackend {
     pub compiler: Compiler,
-    pub backend: Interned<String>,
+    pub backend: String,
 }
 
 impl Step for CodegenBackend {
@@ -1279,14 +1278,14 @@ impl Step for CodegenBackend {
     }
 
     fn make_run(run: RunConfig<'_>) {
-        for &backend in run.builder.config.codegen_backends(run.target) {
+        for backend in run.builder.config.codegen_backends(run.target) {
             if backend == "llvm" {
                 continue; // Already built as part of rustc
             }
 
             run.builder.ensure(CodegenBackend {
                 compiler: run.builder.compiler(run.builder.top_stage, run.target),
-                backend,
+                backend: backend.clone(),
             });
         }
     }
@@ -1303,7 +1302,8 @@ impl Step for CodegenBackend {
             return None;
         }
 
-        if !builder.config.codegen_backends(self.compiler.host).contains(&self.backend) {
+        if !builder.config.codegen_backends(self.compiler.host).contains(&self.backend.to_string())
+        {
             return None;
         }
 
@@ -1359,7 +1359,7 @@ impl Step for CodegenBackend {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Rustfmt {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1404,7 +1404,7 @@ impl Step for Rustfmt {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct RustDemangler {
     pub compiler: Compiler,
     pub target: TargetSelection,
@@ -1460,7 +1460,7 @@ impl Step for RustDemangler {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, Clone, Hash, PartialEq, Eq)]
 pub struct Extended {
     stage: u32,
     host: TargetSelection,
@@ -1528,7 +1528,7 @@ impl Step for Extended {
         add_component!("analysis" => Analysis { compiler, target });
         add_component!("rustc-codegen-cranelift" => CodegenBackend {
             compiler: builder.compiler(stage, target),
-            backend: INTERNER.intern_str("cranelift"),
+            backend: "cranelift".to_string(),
         });
 
         let etc = builder.src.join("src/etc/installer");
@@ -2021,18 +2021,55 @@ fn add_env(builder: &Builder<'_>, cmd: &mut Command, target: TargetSelection) {
     }
 }
 
-fn install_llvm_file(builder: &Builder<'_>, source: &Path, destination: &Path) {
+fn install_llvm_file(
+    builder: &Builder<'_>,
+    source: &Path,
+    destination: &Path,
+    install_symlink: bool,
+) {
     if builder.config.dry_run() {
         return;
     }
 
-    builder.install(source, destination, 0o644);
+    if source.is_symlink() {
+        // If we have a symlink like libLLVM-18.so -> libLLVM.so.18.1, install the target of the
+        // symlink, which is what will actually get loaded at runtime.
+        builder.install(&t!(fs::canonicalize(source)), destination, 0o644);
+
+        let full_dest = destination.join(source.file_name().unwrap());
+        if install_symlink {
+            // For download-ci-llvm, also install the symlink, to match what LLVM does. Using a
+            // symlink is fine here, as this is not a rustup component.
+            builder.copy(&source, &full_dest);
+        } else {
+            // Otherwise, replace the symlink with an equivalent linker script. This is used when
+            // projects like miri link against librustc_driver.so. We don't use a symlink, as
+            // these are not allowed inside rustup components.
+            let link = t!(fs::read_link(source));
+            let mut linker_script = t!(fs::File::create(full_dest));
+            t!(write!(linker_script, "INPUT({})\n", link.display()));
+
+            // We also want the linker script to have the same mtime as the source, otherwise it
+            // can trigger rebuilds.
+            let meta = t!(fs::metadata(source));
+            if let Ok(mtime) = meta.modified() {
+                t!(linker_script.set_modified(mtime));
+            }
+        }
+    } else {
+        builder.install(&source, destination, 0o644);
+    }
 }
 
 /// Maybe add LLVM object files to the given destination lib-dir. Allows either static or dynamic linking.
 ///
 /// Returns whether the files were actually copied.
-fn maybe_install_llvm(builder: &Builder<'_>, target: TargetSelection, dst_libdir: &Path) -> bool {
+fn maybe_install_llvm(
+    builder: &Builder<'_>,
+    target: TargetSelection,
+    dst_libdir: &Path,
+    install_symlink: bool,
+) -> bool {
     // If the LLVM was externally provided, then we don't currently copy
     // artifacts into the sysroot. This is not necessarily the right
     // choice (in particular, it will require the LLVM dylib to be in
@@ -2081,7 +2118,7 @@ fn maybe_install_llvm(builder: &Builder<'_>, target: TargetSelection, dst_libdir
             } else {
                 PathBuf::from(file)
             };
-            install_llvm_file(builder, &file, dst_libdir);
+            install_llvm_file(builder, &file, dst_libdir, install_symlink);
         }
         !builder.config.dry_run()
     } else {
@@ -2096,7 +2133,7 @@ pub fn maybe_install_llvm_target(builder: &Builder<'_>, target: TargetSelection,
     // dynamically linked; it is already included into librustc_llvm
     // statically.
     if builder.llvm_link_shared() {
-        maybe_install_llvm(builder, target, &dst_libdir);
+        maybe_install_llvm(builder, target, &dst_libdir, false);
     }
 }
 
@@ -2108,7 +2145,7 @@ pub fn maybe_install_llvm_runtime(builder: &Builder<'_>, target: TargetSelection
     // dynamically linked; it is already included into librustc_llvm
     // statically.
     if builder.llvm_link_shared() {
-        maybe_install_llvm(builder, target, &dst_libdir);
+        maybe_install_llvm(builder, target, &dst_libdir, false);
     }
 }
 
@@ -2203,6 +2240,8 @@ impl Step for RustDev {
 
         let mut tarball = Tarball::new(builder, "rust-dev", &target.triple);
         tarball.set_overlay(OverlayKind::LLVM);
+        // LLVM requires a shared object symlink to exist on some platforms.
+        tarball.permit_symlinks(true);
 
         builder.ensure(crate::core::build_steps::llvm::Llvm { target });
 
@@ -2243,7 +2282,7 @@ impl Step for RustDev {
         // of `rustc-dev` to support the inherited `-lLLVM` when using the
         // compiler libraries.
         let dst_libdir = tarball.image_dir().join("lib");
-        maybe_install_llvm(builder, target, &dst_libdir);
+        maybe_install_llvm(builder, target, &dst_libdir, true);
         let link_type = if builder.llvm_link_shared() { "dynamic" } else { "static" };
         t!(std::fs::write(tarball.image_dir().join("link-type.txt"), link_type), dst_libdir);
 

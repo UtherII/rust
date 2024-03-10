@@ -9,11 +9,11 @@
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::fmt;
 use crate::hint;
+use crate::intrinsics::assert_unsafe_precondition;
 use crate::intrinsics::exact_div;
 use crate::mem::{self, SizedTypeProperties};
 use crate::num::NonZero;
 use crate::ops::{Bound, OneSidedRange, Range, RangeBounds};
-use crate::panic::debug_assert_nounwind;
 use crate::ptr;
 use crate::simd::{self, Simd};
 use crate::slice;
@@ -23,7 +23,7 @@ use crate::slice;
     issue = "none",
     reason = "exposed from core to be reused in std; use the memchr crate"
 )]
-/// Pure rust memchr implementation, taken from rust-memchr
+/// Pure Rust memchr implementation, taken from rust-memchr
 pub mod memchr;
 
 #[unstable(
@@ -146,6 +146,9 @@ impl<T> [T] {
     /// ```
     /// let a = [1, 2, 3];
     /// assert!(!a.is_empty());
+    ///
+    /// let b: &[i32] = &[];
+    /// assert!(b.is_empty());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_stable(feature = "const_slice_is_empty", since = "1.39.0")]
@@ -185,6 +188,9 @@ impl<T> [T] {
     ///     *first = 5;
     /// }
     /// assert_eq!(x, &[5, 1, 2]);
+    ///
+    /// let y: &mut [i32] = &mut [];
+    /// assert_eq!(None, y.first_mut());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_slice_first_last", issue = "83570")]
@@ -297,7 +303,7 @@ impl<T> [T] {
         if let [.., last] = self { Some(last) } else { None }
     }
 
-    /// Returns a mutable reference to the last item in the slice.
+    /// Returns a mutable reference to the last item in the slice, or `None` if it is empty.
     ///
     /// # Examples
     ///
@@ -308,6 +314,9 @@ impl<T> [T] {
     ///     *last = 10;
     /// }
     /// assert_eq!(x, &[0, 1, 10]);
+    ///
+    /// let y: &mut [i32] = &mut [];
+    /// assert_eq!(None, y.last_mut());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_slice_first_last", issue = "83570")]
@@ -936,9 +945,14 @@ impl<T> [T] {
     #[unstable(feature = "slice_swap_unchecked", issue = "88539")]
     #[rustc_const_unstable(feature = "const_swap", issue = "83163")]
     pub const unsafe fn swap_unchecked(&mut self, a: usize, b: usize) {
-        debug_assert_nounwind!(
-            a < self.len() && b < self.len(),
-            "slice::swap_unchecked requires that the indices are within the slice"
+        assert_unsafe_precondition!(
+            check_library_ub,
+            "slice::swap_unchecked requires that the indices are within the slice",
+            (
+                len: usize = self.len(),
+                a: usize = a,
+                b: usize = b,
+            ) => a < len && b < len,
         );
 
         let ptr = self.as_mut_ptr();
@@ -1276,9 +1290,10 @@ impl<T> [T] {
     #[inline]
     #[must_use]
     pub const unsafe fn as_chunks_unchecked<const N: usize>(&self) -> &[[T; N]] {
-        debug_assert_nounwind!(
-            N != 0 && self.len() % N == 0,
-            "slice::as_chunks_unchecked requires `N != 0` and the slice to split exactly into `N`-element chunks"
+        assert_unsafe_precondition!(
+            check_language_ub,
+            "slice::as_chunks_unchecked requires `N != 0` and the slice to split exactly into `N`-element chunks",
+            (n: usize = N, len: usize = self.len()) => n != 0 && len % n == 0,
         );
         // SAFETY: Caller must guarantee that `N` is nonzero and exactly divides the slice length
         let new_len = unsafe { exact_div(self.len(), N) };
@@ -1430,9 +1445,10 @@ impl<T> [T] {
     #[inline]
     #[must_use]
     pub const unsafe fn as_chunks_unchecked_mut<const N: usize>(&mut self) -> &mut [[T; N]] {
-        debug_assert_nounwind!(
-            N != 0 && self.len() % N == 0,
-            "slice::as_chunks_unchecked requires `N != 0` and the slice to split exactly into `N`-element chunks"
+        assert_unsafe_precondition!(
+            check_language_ub,
+            "slice::as_chunks_unchecked requires `N != 0` and the slice to split exactly into `N`-element chunks",
+            (n: usize = N, len: usize = self.len()) => n != 0 && len % n == 0
         );
         // SAFETY: Caller must guarantee that `N` is nonzero and exactly divides the slice length
         let new_len = unsafe { exact_div(self.len(), N) };
@@ -1962,9 +1978,10 @@ impl<T> [T] {
         let len = self.len();
         let ptr = self.as_ptr();
 
-        debug_assert_nounwind!(
-            mid <= len,
-            "slice::split_at_unchecked requires the index to be within the slice"
+        assert_unsafe_precondition!(
+            check_library_ub,
+            "slice::split_at_unchecked requires the index to be within the slice",
+            (mid: usize = mid, len: usize = len) => mid <= len,
         );
 
         // SAFETY: Caller has to check that `0 <= mid <= self.len()`
@@ -2012,9 +2029,10 @@ impl<T> [T] {
         let len = self.len();
         let ptr = self.as_mut_ptr();
 
-        debug_assert_nounwind!(
-            mid <= len,
-            "slice::split_at_mut_unchecked requires the index to be within the slice"
+        assert_unsafe_precondition!(
+            check_library_ub,
+            "slice::split_at_mut_unchecked requires the index to be within the slice",
+            (mid: usize = mid, len: usize = len) => mid <= len,
         );
 
         // SAFETY: Caller has to check that `0 <= mid <= self.len()`.
@@ -2510,7 +2528,7 @@ impl<T> [T] {
         cmp::SliceContains::slice_contains(x, self)
     }
 
-    /// Returns `true` if `needle` is a prefix of the slice.
+    /// Returns `true` if `needle` is a prefix of the slice or equal to the slice.
     ///
     /// # Examples
     ///
@@ -2518,6 +2536,7 @@ impl<T> [T] {
     /// let v = [10, 40, 30];
     /// assert!(v.starts_with(&[10]));
     /// assert!(v.starts_with(&[10, 40]));
+    /// assert!(v.starts_with(&v));
     /// assert!(!v.starts_with(&[50]));
     /// assert!(!v.starts_with(&[10, 50]));
     /// ```
@@ -2540,7 +2559,7 @@ impl<T> [T] {
         self.len() >= n && needle == &self[..n]
     }
 
-    /// Returns `true` if `needle` is a suffix of the slice.
+    /// Returns `true` if `needle` is a suffix of the slice or equal to the slice.
     ///
     /// # Examples
     ///
@@ -2548,6 +2567,7 @@ impl<T> [T] {
     /// let v = [10, 40, 30];
     /// assert!(v.ends_with(&[30]));
     /// assert!(v.ends_with(&[40, 30]));
+    /// assert!(v.ends_with(&v));
     /// assert!(!v.ends_with(&[50]));
     /// assert!(!v.ends_with(&[50, 30]));
     /// ```
@@ -2573,7 +2593,8 @@ impl<T> [T] {
     /// Returns a subslice with the prefix removed.
     ///
     /// If the slice starts with `prefix`, returns the subslice after the prefix, wrapped in `Some`.
-    /// If `prefix` is empty, simply returns the original slice.
+    /// If `prefix` is empty, simply returns the original slice. If `prefix` is equal to the
+    /// original slice, returns an empty slice.
     ///
     /// If the slice does not start with `prefix`, returns `None`.
     ///
@@ -2583,6 +2604,7 @@ impl<T> [T] {
     /// let v = &[10, 40, 30];
     /// assert_eq!(v.strip_prefix(&[10]), Some(&[40, 30][..]));
     /// assert_eq!(v.strip_prefix(&[10, 40]), Some(&[30][..]));
+    /// assert_eq!(v.strip_prefix(&[10, 40, 30]), Some(&[][..]));
     /// assert_eq!(v.strip_prefix(&[50]), None);
     /// assert_eq!(v.strip_prefix(&[10, 50]), None);
     ///
@@ -2611,7 +2633,8 @@ impl<T> [T] {
     /// Returns a subslice with the suffix removed.
     ///
     /// If the slice ends with `suffix`, returns the subslice before the suffix, wrapped in `Some`.
-    /// If `suffix` is empty, simply returns the original slice.
+    /// If `suffix` is empty, simply returns the original slice. If `suffix` is equal to the
+    /// original slice, returns an empty slice.
     ///
     /// If the slice does not end with `suffix`, returns `None`.
     ///
@@ -2621,6 +2644,7 @@ impl<T> [T] {
     /// let v = &[10, 40, 30];
     /// assert_eq!(v.strip_suffix(&[30]), Some(&[10, 40][..]));
     /// assert_eq!(v.strip_suffix(&[40, 30]), Some(&[10][..]));
+    /// assert_eq!(v.strip_suffix(&[10, 40, 30]), Some(&[][..]));
     /// assert_eq!(v.strip_suffix(&[50]), None);
     /// assert_eq!(v.strip_suffix(&[50, 30]), None);
     /// ```
@@ -3771,11 +3795,8 @@ impl<T> [T] {
     /// maintained.
     ///
     /// This method splits the slice into three distinct slices: prefix, correctly aligned middle
-    /// slice of a new type, and the suffix slice. How exactly the slice is split up is not
-    /// specified; the middle part may be smaller than necessary. However, if this fails to return a
-    /// maximal middle part, that is because code is running in a context where performance does not
-    /// matter, such as a sanitizer attempting to find alignment bugs. Regular code running
-    /// in a default (debug or release) execution *will* return a maximal middle part.
+    /// slice of a new type, and the suffix slice. The middle part will be as big as possible under
+    /// the given alignment constraint and element size.
     ///
     /// This method has no purpose when either input element `T` or output element `U` are
     /// zero-sized and will return the original slice without splitting anything.
@@ -3839,11 +3860,8 @@ impl<T> [T] {
     /// types is maintained.
     ///
     /// This method splits the slice into three distinct slices: prefix, correctly aligned middle
-    /// slice of a new type, and the suffix slice. How exactly the slice is split up is not
-    /// specified; the middle part may be smaller than necessary. However, if this fails to return a
-    /// maximal middle part, that is because code is running in a context where performance does not
-    /// matter, such as a sanitizer attempting to find alignment bugs. Regular code running
-    /// in a default (debug or release) execution *will* return a maximal middle part.
+    /// slice of a new type, and the suffix slice. The middle part will be as big as possible under
+    /// the given alignment constraint and element size.
     ///
     /// This method has no purpose when either input element `T` or output element `U` are
     /// zero-sized and will return the original slice without splitting anything.

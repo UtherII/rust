@@ -8,32 +8,6 @@ use rustc_span::{
 use crate::{late::PatternSource, Res};
 
 #[derive(Diagnostic)]
-#[diag(resolve_parent_module_reset_for_binding, code = E0637)]
-pub(crate) struct ParentModuleResetForBinding;
-
-#[derive(Diagnostic)]
-#[diag(resolve_ampersand_used_without_explicit_lifetime_name, code = E0637)]
-#[note]
-pub(crate) struct AmpersandUsedWithoutExplicitLifetimeName(#[primary_span] pub(crate) Span);
-
-#[derive(Diagnostic)]
-#[diag(resolve_underscore_lifetime_name_cannot_be_used_here, code = E0637)]
-#[note]
-pub(crate) struct UnderscoreLifetimeNameCannotBeUsedHere(#[primary_span] pub(crate) Span);
-
-#[derive(Diagnostic)]
-#[diag(resolve_crate_may_not_be_imported)]
-pub(crate) struct CrateMayNotBeImported(#[primary_span] pub(crate) Span);
-
-#[derive(Diagnostic)]
-#[diag(resolve_crate_root_imports_must_be_named_explicitly)]
-pub(crate) struct CrateRootNamesMustBeNamedExplicitly(#[primary_span] pub(crate) Span);
-
-#[derive(Diagnostic)]
-#[diag(resolve_crate_root_imports_must_be_named_explicitly)]
-pub(crate) struct ResolutionError(#[primary_span] pub(crate) Span);
-
-#[derive(Diagnostic)]
 #[diag(resolve_generic_params_from_outer_item, code = E0401)]
 pub(crate) struct GenericParamsFromOuterItem {
     #[primary_span]
@@ -468,19 +442,6 @@ pub(crate) struct UnreachableLabelSubLabelUnreachable {
 }
 
 #[derive(Diagnostic)]
-#[diag(resolve_trait_impl_mismatch)]
-pub(crate) struct TraitImplMismatch {
-    #[primary_span]
-    #[label]
-    pub(crate) span: Span,
-    pub(crate) name: Symbol,
-    pub(crate) kind: String,
-    #[label(resolve_label_trait_item)]
-    pub(crate) trait_item_span: Span,
-    pub(crate) trait_path: String,
-}
-
-#[derive(Diagnostic)]
 #[diag(resolve_invalid_asm_sym)]
 #[help]
 pub(crate) struct InvalidAsmSym {
@@ -680,6 +641,21 @@ pub(crate) struct CannotFindIdentInThisScope<'a> {
 #[derive(Subdiagnostic)]
 #[note(resolve_explicit_unsafe_traits)]
 pub(crate) struct ExplicitUnsafeTraits {
+    #[primary_span]
+    pub(crate) span: Span,
+    pub(crate) ident: Ident,
+}
+
+#[derive(Subdiagnostic)]
+#[note(resolve_macro_defined_later)]
+pub(crate) struct MacroDefinedLater {
+    #[primary_span]
+    pub(crate) span: Span,
+}
+
+#[derive(Subdiagnostic)]
+#[label(resolve_consider_move_macro_position)]
+pub(crate) struct MacroSuggMovePosition {
     #[primary_span]
     pub(crate) span: Span,
     pub(crate) ident: Ident,
