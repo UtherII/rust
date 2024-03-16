@@ -1536,7 +1536,8 @@ impl Step for Sysroot {
         };
         let sysroot = sysroot_dir(compiler.stage);
 
-        builder.verbose(&format!("Removing sysroot {} to avoid caching bugs", sysroot.display()));
+        builder
+            .verbose(|| println!("Removing sysroot {} to avoid caching bugs", sysroot.display()));
         let _ = fs::remove_dir_all(&sysroot);
         t!(fs::create_dir_all(&sysroot));
 
@@ -1606,7 +1607,7 @@ impl Step for Sysroot {
                     return true;
                 }
                 if !filtered_files.iter().all(|f| f != path.file_name().unwrap()) {
-                    builder.verbose_than(1, &format!("ignoring {}", path.display()));
+                    builder.verbose_than(1, || println!("ignoring {}", path.display()));
                     false
                 } else {
                     true
@@ -1843,6 +1844,16 @@ impl Step for Assemble {
             }
         }
 
+        if builder.config.llvm_bitcode_linker_enabled {
+            let src_path = builder.ensure(crate::core::build_steps::tool::LlvmBitcodeLinker {
+                compiler: build_compiler,
+                target: target_compiler.host,
+                extra_features: vec![],
+            });
+            let tool_exe = exe("llvm-bitcode-linker", target_compiler.host);
+            builder.copy(&src_path, &libdir_bin.join(&tool_exe));
+        }
+
         // Ensure that `libLLVM.so` ends up in the newly build compiler directory,
         // so that it can be found when the newly built `rustc` is run.
         dist::maybe_install_llvm_runtime(builder, target_compiler.host, &sysroot);
@@ -2075,7 +2086,7 @@ pub fn stream_cargo(
         cargo.arg(arg);
     }
 
-    builder.verbose(&format!("running: {cargo:?}"));
+    builder.verbose(|| println!("running: {cargo:?}"));
 
     if builder.config.dry_run() {
         return true;

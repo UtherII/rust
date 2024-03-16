@@ -1,7 +1,7 @@
 use crate::build::expr::as_place::PlaceBuilder;
 use crate::build::scope::DropKind;
 use itertools::Itertools;
-use rustc_apfloat::ieee::{Double, Single};
+use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use rustc_apfloat::Float;
 use rustc_ast::attr;
 use rustc_data_structures::fx::FxHashMap;
@@ -234,6 +234,10 @@ struct Builder<'a, 'tcx> {
     // the root (most of them do) and saves us from retracing many sub-paths
     // many times, and rechecking many nodes.
     lint_level_roots_cache: GrowableBitSet<hir::ItemLocalId>,
+
+    /// Collects additional coverage information during MIR building.
+    /// Only present if branch coverage is enabled and this function is eligible.
+    coverage_branch_info: Option<coverageinfo::BranchInfoBuilder>,
 }
 
 type CaptureMap<'tcx> = SortedIndexMultiMap<usize, hir::HirId, Capture<'tcx>>;
@@ -631,7 +635,7 @@ fn construct_error(tcx: TyCtxt<'_>, def_id: LocalDefId, guar: ErrorGuaranteed) -
         | DefKind::AssocConst
         | DefKind::AnonConst
         | DefKind::InlineConst
-        | DefKind::Static(_) => (vec![], tcx.type_of(def_id).instantiate_identity(), None),
+        | DefKind::Static { .. } => (vec![], tcx.type_of(def_id).instantiate_identity(), None),
         DefKind::Ctor(..) | DefKind::Fn | DefKind::AssocFn => {
             let sig = tcx.liberate_late_bound_regions(
                 def_id.to_def_id(),
@@ -807,6 +811,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             unit_temp: None,
             var_debug_info: vec![],
             lint_level_roots_cache: GrowableBitSet::new_empty(),
+            coverage_branch_info: coverageinfo::BranchInfoBuilder::new_if_enabled(tcx, def),
         };
 
         assert_eq!(builder.cfg.start_new_block(), START_BLOCK);
@@ -826,7 +831,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             }
         }
 
-        Body::new(
+        let mut body = Body::new(
             MirSource::item(self.def_id.to_def_id()),
             self.cfg.basic_blocks,
             self.source_scopes,
@@ -837,7 +842,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             self.fn_span,
             self.coroutine,
             None,
-        )
+        );
+        body.coverage_branch_info = self.coverage_branch_info.and_then(|b| b.into_done());
+        body
     }
 
     fn insert_upvar_arg(&mut self) {
@@ -1053,7 +1060,8 @@ pub(crate) fn parse_float_into_scalar(
 ) -> Option<Scalar> {
     let num = num.as_str();
     match float_ty {
-        ty::FloatTy::F16 => unimplemented!("f16_f128"),
+        // FIXME(f16_f128): When available, compare to the library parser as with `f32` and `f64`
+        ty::FloatTy::F16 => num.parse::<Half>().ok().map(Scalar::from_f16),
         ty::FloatTy::F32 => {
             let Ok(rust_f) = num.parse::<f32>() else { return None };
             let mut f = num
@@ -1100,7 +1108,8 @@ pub(crate) fn parse_float_into_scalar(
 
             Some(Scalar::from_f64(f))
         }
-        ty::FloatTy::F128 => unimplemented!("f16_f128"),
+        // FIXME(f16_f128): When available, compare to the library parser as with `f32` and `f64`
+        ty::FloatTy::F128 => num.parse::<Quad>().ok().map(Scalar::from_f128),
     }
 }
 
@@ -1111,6 +1120,7 @@ pub(crate) fn parse_float_into_scalar(
 
 mod block;
 mod cfg;
+mod coverageinfo;
 mod custom;
 mod expr;
 mod matches;

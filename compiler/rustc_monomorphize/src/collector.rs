@@ -380,8 +380,12 @@ fn collect_items_rec<'tcx>(
             // Sanity check whether this ended up being collected accidentally
             debug_assert!(should_codegen_locally(tcx, &instance));
 
-            let ty = instance.ty(tcx, ty::ParamEnv::reveal_all());
-            visit_drop_use(tcx, ty, true, starting_item.span, &mut used_items);
+            let DefKind::Static { nested, .. } = tcx.def_kind(def_id) else { bug!() };
+            // Nested statics have no type.
+            if !nested {
+                let ty = instance.ty(tcx, ty::ParamEnv::reveal_all());
+                visit_drop_use(tcx, ty, true, starting_item.span, &mut used_items);
+            }
 
             recursion_depth_reset = None;
 
@@ -814,21 +818,27 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirUsedCollector<'a, 'tcx> {
         self.super_rvalue(rvalue, location);
     }
 
-    /// This does not walk the constant, as it has been handled entirely here and trying
-    /// to walk it would attempt to evaluate the `ty::Const` inside, which doesn't necessarily
-    /// work, as some constants cannot be represented in the type system.
+    /// This does not walk the MIR of the constant as that is not needed for codegen, all we need is
+    /// to ensure that the constant evaluates successfully and walk the result.
     #[instrument(skip(self), level = "debug")]
     fn visit_constant(&mut self, constant: &mir::ConstOperand<'tcx>, location: Location) {
         let const_ = self.monomorphize(constant.const_);
         let param_env = ty::ParamEnv::reveal_all();
-        let val = match const_.eval(self.tcx, param_env, None) {
+        // Evaluate the constant. This makes const eval failure a collection-time error (rather than
+        // a codegen-time error). rustc stops after collection if there was an error, so this
+        // ensures codegen never has to worry about failing consts.
+        // (codegen relies on this and ICEs will happen if this is violated.)
+        let val = match const_.eval(self.tcx, param_env, Some(constant.span)) {
             Ok(v) => v,
-            Err(ErrorHandled::Reported(..)) => return,
             Err(ErrorHandled::TooGeneric(..)) => span_bug!(
                 self.body.source_info(location).span,
                 "collection encountered polymorphic constant: {:?}",
                 const_
             ),
+            Err(err @ ErrorHandled::Reported(..)) => {
+                err.emit_note(self.tcx);
+                return;
+            }
         };
         collect_const_value(self.tcx, val, self.output);
         MirVisitor::visit_ty(self, const_.ty(), TyContext::Location(location));
@@ -1037,7 +1047,7 @@ fn should_codegen_locally<'tcx>(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>) ->
         return false;
     }
 
-    if let DefKind::Static(_) = tcx.def_kind(def_id) {
+    if let DefKind::Static { .. } = tcx.def_kind(def_id) {
         // We cannot monomorphize statics from upstream crates.
         return false;
     }
@@ -1254,7 +1264,7 @@ impl<'v> RootCollector<'_, 'v> {
                 );
                 self.output.push(dummy_spanned(MonoItem::GlobalAsm(id)));
             }
-            DefKind::Static(..) => {
+            DefKind::Static { .. } => {
                 let def_id = id.owner_id.to_def_id();
                 debug!("RootCollector: ItemKind::Static({})", self.tcx.def_path_str(def_id));
                 self.output.push(dummy_spanned(MonoItem::Static(def_id)));
@@ -1339,14 +1349,12 @@ impl<'v> RootCollector<'_, 'v> {
             main_ret_ty.no_bound_vars().unwrap(),
         );
 
-        let start_instance = Instance::resolve(
+        let start_instance = Instance::expect_resolve(
             self.tcx,
             ty::ParamEnv::reveal_all(),
             start_def_id,
             self.tcx.mk_args(&[main_ret_ty.into()]),
-        )
-        .unwrap()
-        .unwrap();
+        );
 
         self.output.push(create_fn_mono_item(self.tcx, start_instance, DUMMY_SP));
     }

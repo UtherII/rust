@@ -127,7 +127,7 @@ fn configure_main(tcx: TyCtxt<'_>, visitor: &EntryContext<'_>) -> Option<(DefId,
         {
             // non-local main imports are handled below
             if let Some(def_id) = def_id.as_local()
-                && matches!(tcx.opt_hir_node_by_def_id(def_id), Some(Node::ForeignItem(_)))
+                && matches!(tcx.hir_node_by_def_id(def_id), Node::ForeignItem(_))
             {
                 tcx.dcx().emit_err(ExternMain { span: tcx.def_span(def_id) });
                 return None;
@@ -156,13 +156,13 @@ fn sigpipe(tcx: TyCtxt<'_>, def_id: DefId) -> u8 {
             (Some(sym::inherit), None) => sigpipe::INHERIT,
             (Some(sym::sig_ign), None) => sigpipe::SIG_IGN,
             (Some(sym::sig_dfl), None) => sigpipe::SIG_DFL,
-            (_, Some(_)) => {
-                // Keep going so that `fn emit_malformed_attribute()` can print
-                // an excellent error message
+            (Some(_), None) => {
+                tcx.dcx().emit_err(UnixSigpipeValues { span: attr.span });
                 sigpipe::DEFAULT
             }
             _ => {
-                tcx.dcx().emit_err(UnixSigpipeValues { span: attr.span });
+                // Keep going so that `fn emit_malformed_attribute()` can print
+                // an excellent error message
                 sigpipe::DEFAULT
             }
         }

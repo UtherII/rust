@@ -9,7 +9,7 @@
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/thir.html
 
 use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
-use rustc_errors::{DiagArgValue, IntoDiagnosticArg};
+use rustc_errors::{DiagArgValue, IntoDiagArg};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::RangeEnd;
@@ -321,9 +321,13 @@ pub enum ExprKind<'tcx> {
     Cast {
         source: ExprId,
     },
+    /// Forces its contents to be treated as a value expression, not a place
+    /// expression. This is inserted in some places where an operation would
+    /// otherwise be erased completely (e.g. some no-op casts), but we still
+    /// need to ensure that its operand is treated as a value and not a place.
     Use {
         source: ExprId,
-    }, // Use a lexpr to get a vexpr.
+    },
     /// A coercion from `!` to any type.
     NeverToAny {
         source: ExprId,
@@ -338,6 +342,13 @@ pub enum ExprKind<'tcx> {
     Loop {
         body: ExprId,
     },
+    /// Special expression representing the `let` part of an `if let` or similar construct
+    /// (including `if let` guards in match arms, and let-chains formed by `&&`).
+    ///
+    /// This isn't considered a real expression in surface Rust syntax, so it can
+    /// only appear in specific situations, such as within the condition of an `if`.
+    ///
+    /// (Not to be confused with [`StmtKind::Let`], which is a normal `let` statement.)
     Let {
         expr: ExprId,
         pat: Box<Pat<'tcx>>,
@@ -676,9 +687,9 @@ impl<'tcx> Pat<'tcx> {
     }
 }
 
-impl<'tcx> IntoDiagnosticArg for Pat<'tcx> {
-    fn into_diagnostic_arg(self) -> DiagArgValue {
-        format!("{self}").into_diagnostic_arg()
+impl<'tcx> IntoDiagArg for Pat<'tcx> {
+    fn into_diag_arg(self) -> DiagArgValue {
+        format!("{self}").into_diag_arg()
     }
 }
 

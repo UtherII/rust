@@ -9,7 +9,7 @@ use crate::infer::lexical_region_resolve::RegionResolutionError;
 use crate::infer::{SubregionOrigin, TypeTrace};
 use crate::traits::{ObligationCauseCode, UnifyReceiverContext};
 use rustc_data_structures::fx::FxIndexSet;
-use rustc_errors::{AddToDiagnostic, Applicability, Diag, ErrorGuaranteed, MultiSpan};
+use rustc_errors::{Applicability, Diag, ErrorGuaranteed, MultiSpan, Subdiagnostic};
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{walk_ty, Visitor};
 use rustc_hir::{
@@ -234,7 +234,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         if let (Some(ident), true) = (override_error_code, fn_returns.is_empty()) {
             // Provide a more targeted error code and description.
             let retarget_subdiag = MoreTargeted { ident };
-            retarget_subdiag.add_to_diagnostic(&mut err);
+            retarget_subdiag.add_to_diag(&mut err);
         }
 
         let arg = match param.param.pat.simple_ident() {
@@ -459,7 +459,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                 tcx.hir().trait_impls(trait_did).iter().find_map(|&impl_did| {
                     if let Node::Item(Item {
                         kind: ItemKind::Impl(hir::Impl { self_ty, .. }), ..
-                    }) = tcx.opt_hir_node_by_def_id(impl_did)?
+                    }) = tcx.hir_node_by_def_id(impl_did)
                         && trait_objects.iter().all(|did| {
                             // FIXME: we should check `self_ty` against the receiver
                             // type in the `UnifyReceiver` context, but for now, use
@@ -532,7 +532,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             hir_v.visit_ty(self_ty);
             for &span in &traits {
                 let subdiag = DynTraitConstraintSuggestion { span, ident };
-                subdiag.add_to_diagnostic(err);
+                subdiag.add_to_diag(err);
                 suggested = true;
             }
         }

@@ -551,7 +551,7 @@ impl Miri {
         if builder.config.dry_run() {
             String::new()
         } else {
-            builder.verbose(&format!("running: {cargo:?}"));
+            builder.verbose(|| println!("running: {cargo:?}"));
             let out =
                 cargo.output().expect("We already ran `cargo miri setup` before and that worked");
             assert!(out.status.success(), "`cargo miri setup` returned with non-0 exit code");
@@ -559,7 +559,7 @@ impl Miri {
             let stdout = String::from_utf8(out.stdout)
                 .expect("`cargo miri setup` stdout is not valid UTF-8");
             let sysroot = stdout.trim_end();
-            builder.verbose(&format!("`cargo miri setup --print-sysroot` said: {sysroot:?}"));
+            builder.verbose(|| println!("`cargo miri setup --print-sysroot` said: {sysroot:?}"));
             sysroot.to_owned()
         }
     }
@@ -1657,8 +1657,8 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
         // ensure that `libproc_macro` is available on the host.
         builder.ensure(compile::Std::new(compiler, compiler.host));
 
-        // As well as the target, except for plain wasm32, which can't build it
-        if suite != "mir-opt" && !target.contains("wasm") && !target.contains("emscripten") {
+        // As well as the target
+        if suite != "mir-opt" {
             builder.ensure(TestHelpers { target });
         }
 
@@ -1971,6 +1971,8 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
 
         if builder.remote_tested(target) {
             cmd.arg("--remote-test-client").arg(builder.tool_exe(Tool::RemoteTestClient));
+        } else if let Some(tool) = builder.runner(target) {
+            cmd.arg("--runner").arg(tool);
         }
 
         if suite != "mir-opt" {
@@ -2324,7 +2326,7 @@ fn markdown_test(builder: &Builder<'_>, compiler: Compiler, markdown: &Path) -> 
         }
     }
 
-    builder.verbose(&format!("doc tests for: {}", markdown.display()));
+    builder.verbose(|| println!("doc tests for: {}", markdown.display()));
     let mut cmd = builder.rustdoc_cmd(compiler);
     builder.add_rust_test_threads(&mut cmd);
     // allow for unstable options such as new editions
@@ -2509,20 +2511,13 @@ fn prepare_cargo_test(
     dylib_path.insert(0, PathBuf::from(&*builder.sysroot_libdir(compiler, target)));
     cargo.env(dylib_path_var(), env::join_paths(&dylib_path).unwrap());
 
-    if target.contains("emscripten") {
-        cargo.env(
-            format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)),
-            builder.config.nodejs.as_ref().expect("nodejs not configured"),
-        );
-    } else if target.starts_with("wasm32") {
-        let node = builder.config.nodejs.as_ref().expect("nodejs not configured");
-        let runner = format!("{} {}/src/etc/wasm32-shim.js", node.display(), builder.src.display());
-        cargo.env(format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)), &runner);
-    } else if builder.remote_tested(target) {
+    if builder.remote_tested(target) {
         cargo.env(
             format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)),
             format!("{} run 0", builder.tool_exe(Tool::RemoteTestClient).display()),
         );
+    } else if let Some(tool) = builder.runner(target) {
+        cargo.env(format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)), tool);
     }
 
     cargo

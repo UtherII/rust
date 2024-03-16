@@ -558,7 +558,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                     hir::intravisit::walk_stmt(self, stmt);
                     let expr = match stmt.kind {
                         hir::StmtKind::Semi(expr) | hir::StmtKind::Expr(expr) => expr,
-                        hir::StmtKind::Local(hir::Local { init: Some(expr), .. }) => expr,
+                        hir::StmtKind::Let(hir::Local { init: Some(expr), .. }) => expr,
                         _ => {
                             return;
                         }
@@ -672,11 +672,8 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         };
         (
             true,
-            td.as_local().and_then(|tld| match self.infcx.tcx.opt_hir_node_by_def_id(tld) {
-                Some(Node::Item(hir::Item {
-                    kind: hir::ItemKind::Trait(_, _, _, _, items),
-                    ..
-                })) => {
+            td.as_local().and_then(|tld| match self.infcx.tcx.hir_node_by_def_id(tld) {
+                Node::Item(hir::Item { kind: hir::ItemKind::Trait(_, _, _, _, items), .. }) => {
                     let mut f_in_trait_opt = None;
                     for hir::TraitItemRef { id: fi, kind: k, .. } in *items {
                         let hi = fi.hir_id();
@@ -1305,7 +1302,7 @@ struct BindingFinder {
 impl<'tcx> Visitor<'tcx> for BindingFinder {
     type Result = ControlFlow<hir::HirId>;
     fn visit_stmt(&mut self, s: &'tcx hir::Stmt<'tcx>) -> Self::Result {
-        if let hir::StmtKind::Local(local) = s.kind
+        if let hir::StmtKind::Let(local) = s.kind
             && local.pat.span == self.span
         {
             ControlFlow::Break(local.hir_id)
@@ -1475,11 +1472,9 @@ fn get_mut_span_in_struct_field<'tcx>(
     if let ty::Ref(_, ty, _) = ty.kind()
         && let ty::Adt(def, _) = ty.kind()
         && let field = def.all_fields().nth(field.index())?
-        // Use the HIR types to construct the diagnostic message.
-        && let node = tcx.opt_hir_node_by_def_id(field.did.as_local()?)?
         // Now we're dealing with the actual struct that we're going to suggest a change to,
         // we can expect a field that is an immutable reference to a type.
-        && let hir::Node::Field(field) = node
+        && let hir::Node::Field(field) = tcx.hir_node_by_def_id(field.did.as_local()?)
         && let hir::TyKind::Ref(lt, hir::MutTy { mutbl: hir::Mutability::Not, ty }) = field.ty.kind
     {
         return Some(lt.ident.span.between(ty.span));

@@ -1209,7 +1209,7 @@ pub struct Stmt<'hir> {
 #[derive(Debug, Clone, Copy, HashStable_Generic)]
 pub enum StmtKind<'hir> {
     /// A local (`let`) binding.
-    Local(&'hir Local<'hir>),
+    Let(&'hir Local<'hir>),
 
     /// An item binding.
     Item(ItemId),
@@ -1253,11 +1253,11 @@ pub struct Arm<'hir> {
     pub body: &'hir Expr<'hir>,
 }
 
-/// Represents a `let <pat>[: <ty>] = <expr>` expression (not a Local), occurring in an `if-let` or
-/// `let-else`, evaluating to a boolean. Typically the pattern is refutable.
+/// Represents a `let <pat>[: <ty>] = <expr>` expression (not a [`Local`]), occurring in an `if-let`
+/// or `let-else`, evaluating to a boolean. Typically the pattern is refutable.
 ///
-/// In an if-let, imagine it as `if (let <pat> = <expr>) { ... }`; in a let-else, it is part of the
-/// desugaring to if-let. Only let-else supports the type annotation at present.
+/// In an `if let`, imagine it as `if (let <pat> = <expr>) { ... }`; in a let-else, it is part of
+/// the desugaring to if-let. Only let-else supports the type annotation at present.
 #[derive(Debug, Clone, Copy, HashStable_Generic)]
 pub struct Let<'hir> {
     pub span: Span,
@@ -1510,7 +1510,7 @@ impl fmt::Display for ConstContext {
     }
 }
 
-// NOTE: `IntoDiagnosticArg` impl for `ConstContext` lives in `rustc_errors`
+// NOTE: `IntoDiagArg` impl for `ConstContext` lives in `rustc_errors`
 // due to a cyclical dependency between hir that crate.
 
 /// A literal.
@@ -1616,7 +1616,7 @@ impl Expr<'_> {
     pub fn is_place_expr(&self, mut allow_projections_from: impl FnMut(&Self) -> bool) -> bool {
         match self.kind {
             ExprKind::Path(QPath::Resolved(_, ref path)) => {
-                matches!(path.res, Res::Local(..) | Res::Def(DefKind::Static(_), _) | Res::Err)
+                matches!(path.res, Res::Local(..) | Res::Def(DefKind::Static { .. }, _) | Res::Err)
             }
 
             // Type ascription inherits its place expression kind from its
@@ -2444,7 +2444,7 @@ pub enum PrimTy {
 
 impl PrimTy {
     /// All of the primitive types
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         // any changes here should also be reflected in `PrimTy::from_name`
         Self::Int(IntTy::I8),
         Self::Int(IntTy::I16),
@@ -2458,9 +2458,10 @@ impl PrimTy {
         Self::Uint(UintTy::U64),
         Self::Uint(UintTy::U128),
         Self::Uint(UintTy::Usize),
+        Self::Float(FloatTy::F16),
         Self::Float(FloatTy::F32),
         Self::Float(FloatTy::F64),
-        // FIXME(f16_f128): add these when enabled below
+        Self::Float(FloatTy::F128),
         Self::Bool,
         Self::Char,
         Self::Str,
@@ -2508,12 +2509,10 @@ impl PrimTy {
             sym::u64 => Self::Uint(UintTy::U64),
             sym::u128 => Self::Uint(UintTy::U128),
             sym::usize => Self::Uint(UintTy::Usize),
+            sym::f16 => Self::Float(FloatTy::F16),
             sym::f32 => Self::Float(FloatTy::F32),
             sym::f64 => Self::Float(FloatTy::F64),
-            // FIXME(f16_f128): enabling these will open the gates of f16 and f128 being
-            // understood by rustc.
-            // sym::f16 => Self::Float(FloatTy::F16),
-            // sym::f128 => Self::Float(FloatTy::F128),
+            sym::f128 => Self::Float(FloatTy::F128),
             sym::bool => Self::Bool,
             sym::char => Self::Char,
             sym::str => Self::Str,
@@ -2551,6 +2550,11 @@ pub struct OpaqueTy<'hir> {
     /// originating from a trait method. This makes it so that the opaque is
     /// lowered as an associated type.
     pub in_trait: bool,
+}
+
+#[derive(Copy, Clone, Debug, HashStable_Generic)]
+pub struct AssocOpaqueTy {
+    // Add some data if necessary
 }
 
 /// From whence the opaque type came.
@@ -3363,6 +3367,7 @@ pub enum OwnerNode<'hir> {
     TraitItem(&'hir TraitItem<'hir>),
     ImplItem(&'hir ImplItem<'hir>),
     Crate(&'hir Mod<'hir>),
+    AssocOpaqueTy(&'hir AssocOpaqueTy),
 }
 
 impl<'hir> OwnerNode<'hir> {
@@ -3372,7 +3377,7 @@ impl<'hir> OwnerNode<'hir> {
             | OwnerNode::ForeignItem(ForeignItem { ident, .. })
             | OwnerNode::ImplItem(ImplItem { ident, .. })
             | OwnerNode::TraitItem(TraitItem { ident, .. }) => Some(*ident),
-            OwnerNode::Crate(..) => None,
+            OwnerNode::Crate(..) | OwnerNode::AssocOpaqueTy(..) => None,
         }
     }
 
@@ -3385,6 +3390,7 @@ impl<'hir> OwnerNode<'hir> {
             | OwnerNode::ImplItem(ImplItem { span, .. })
             | OwnerNode::TraitItem(TraitItem { span, .. }) => span,
             OwnerNode::Crate(Mod { spans: ModSpans { inner_span, .. }, .. }) => inner_span,
+            OwnerNode::AssocOpaqueTy(..) => unreachable!(),
         }
     }
 
@@ -3443,6 +3449,7 @@ impl<'hir> OwnerNode<'hir> {
             | OwnerNode::ImplItem(ImplItem { owner_id, .. })
             | OwnerNode::ForeignItem(ForeignItem { owner_id, .. }) => *owner_id,
             OwnerNode::Crate(..) => crate::CRATE_HIR_ID.owner,
+            OwnerNode::AssocOpaqueTy(..) => unreachable!(),
         }
     }
 
@@ -3486,6 +3493,7 @@ impl<'hir> Into<Node<'hir>> for OwnerNode<'hir> {
             OwnerNode::ImplItem(n) => Node::ImplItem(n),
             OwnerNode::TraitItem(n) => Node::TraitItem(n),
             OwnerNode::Crate(n) => Node::Crate(n),
+            OwnerNode::AssocOpaqueTy(n) => Node::AssocOpaqueTy(n),
         }
     }
 }
@@ -3523,6 +3531,7 @@ pub enum Node<'hir> {
     WhereBoundPredicate(&'hir WhereBoundPredicate<'hir>),
     // FIXME: Merge into `Node::Infer`.
     ArrayLenInfer(&'hir InferArg),
+    AssocOpaqueTy(&'hir AssocOpaqueTy),
     // Span by reference to minimize `Node`'s size
     #[allow(rustc::pass_by_value)]
     Err(&'hir Span),
@@ -3573,6 +3582,7 @@ impl<'hir> Node<'hir> {
             | Node::Infer(..)
             | Node::WhereBoundPredicate(..)
             | Node::ArrayLenInfer(..)
+            | Node::AssocOpaqueTy(..)
             | Node::Err(..) => None,
         }
     }
@@ -3678,6 +3688,7 @@ impl<'hir> Node<'hir> {
             Node::TraitItem(i) => Some(OwnerNode::TraitItem(i)),
             Node::ImplItem(i) => Some(OwnerNode::ImplItem(i)),
             Node::Crate(i) => Some(OwnerNode::Crate(i)),
+            Node::AssocOpaqueTy(i) => Some(OwnerNode::AssocOpaqueTy(i)),
             _ => None,
         }
     }

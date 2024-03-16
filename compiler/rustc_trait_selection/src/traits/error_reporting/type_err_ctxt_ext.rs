@@ -32,7 +32,7 @@ use rustc_hir::{GenericParam, Item, Node};
 use rustc_infer::infer::error_reporting::TypeErrCtxt;
 use rustc_infer::infer::{InferOk, TypeTrace};
 use rustc_middle::traits::select::OverflowError;
-use rustc_middle::traits::{DefiningAnchor, SignatureMismatchData};
+use rustc_middle::traits::SignatureMismatchData;
 use rustc_middle::ty::abstract_const::NotConstEvaluatable;
 use rustc_middle::ty::error::{ExpectedFound, TypeError};
 use rustc_middle::ty::fold::{BottomUpFolder, TypeFolder, TypeSuperFoldable};
@@ -2497,11 +2497,11 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                         err.code(E0790);
 
                         if let Some(local_def_id) = data.trait_ref.def_id.as_local()
-                            && let Some(hir::Node::Item(hir::Item {
+                            && let hir::Node::Item(hir::Item {
                                 ident: trait_name,
                                 kind: hir::ItemKind::Trait(_, _, _, _, trait_item_refs),
                                 ..
-                            })) = self.tcx.opt_hir_node_by_def_id(local_def_id)
+                            }) = self.tcx.hir_node_by_def_id(local_def_id)
                             && let Some(method_ref) = trait_item_refs
                                 .iter()
                                 .find(|item_ref| item_ref.ident == *assoc_item_name)
@@ -3073,23 +3073,30 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                 let src = trait_ref.args.type_at(1);
                 let err_msg = format!("`{src}` cannot be safely transmuted into `{dst}`");
                 let safe_transmute_explanation = match reason {
-                    rustc_transmute::Reason::SrcIsUnspecified => {
-                        format!("`{src}` does not have a well-specified layout")
+                    rustc_transmute::Reason::SrcIsNotYetSupported => {
+                        format!("analyzing the transmutability of `{src}` is not yet supported.")
                     }
 
-                    rustc_transmute::Reason::DstIsUnspecified => {
-                        format!("`{dst}` does not have a well-specified layout")
+                    rustc_transmute::Reason::DstIsNotYetSupported => {
+                        format!("analyzing the transmutability of `{dst}` is not yet supported.")
                     }
 
                     rustc_transmute::Reason::DstIsBitIncompatible => {
-                        format!("At least one value of `{src}` isn't a bit-valid value of `{dst}`")
+                        format!("at least one value of `{src}` isn't a bit-valid value of `{dst}`")
                     }
 
                     rustc_transmute::Reason::DstMayHaveSafetyInvariants => {
                         format!("`{dst}` may carry safety invariants")
                     }
                     rustc_transmute::Reason::DstIsTooBig => {
-                        format!("The size of `{src}` is smaller than the size of `{dst}`")
+                        format!("the size of `{src}` is smaller than the size of `{dst}`")
+                    }
+                    rustc_transmute::Reason::DstRefIsTooBig { src, dst } => {
+                        let src_size = src.size;
+                        let dst_size = dst.size;
+                        format!(
+                            "the referent size of `{src}` ({src_size} bytes) is smaller than that of `{dst}` ({dst_size} bytes)"
+                        )
                     }
                     rustc_transmute::Reason::SrcSizeOverflow => {
                         format!(
@@ -3106,7 +3113,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                         dst_min_align,
                     } => {
                         format!(
-                            "The minimum alignment of `{src}` ({src_min_align}) should be greater than that of `{dst}` ({dst_min_align})"
+                            "the minimum alignment of `{src}` ({src_min_align}) should be greater than that of `{dst}` ({dst_min_align})"
                         )
                     }
                     rustc_transmute::Reason::DstIsMoreUnique => {
@@ -3390,25 +3397,20 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
             obligation.cause.span,
             format!("cannot check whether the hidden type of {name} satisfies auto traits"),
         );
+
+        err.note(
+            "fetching the hidden types of an opaque inside of the defining scope is not supported. \
+            You can try moving the opaque type and the item that actually registers a hidden type into a new submodule",
+        );
         err.span_note(self.tcx.def_span(def_id), "opaque type is declared here");
-        match self.defining_use_anchor {
-            DefiningAnchor::Bubble | DefiningAnchor::Error => {}
-            DefiningAnchor::Bind(bind) => {
-                err.span_note(
-                    self.tcx.def_ident_span(bind).unwrap_or_else(|| self.tcx.def_span(bind)),
-                    "this item depends on auto traits of the hidden type, \
-                    but may also be registering the hidden type. \
-                    This is not supported right now. \
-                    You can try moving the opaque type and the item that actually registers a hidden type into a new submodule".to_string(),
-                );
-            }
-        };
 
         self.note_obligation_cause(&mut err, &obligation);
         self.point_at_returns_when_relevant(&mut err, &obligation);
         self.dcx().try_steal_replace_and_emit_err(self.tcx.def_span(def_id), StashKey::Cycle, err)
     }
 
+    // FIXME(@lcnr): This function could be changed to trait `TraitRef` directly
+    // instead of using a `Binder`.
     fn report_signature_mismatch_error(
         &self,
         obligation: &PredicateObligation<'tcx>,

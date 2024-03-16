@@ -1,10 +1,10 @@
-use rustc_errors::{AddToDiagnostic, Diag, EmissionGuarantee, SubdiagMessageOp};
+use rustc_errors::{Diag, EmissionGuarantee, SubdiagMessageOp, Subdiagnostic};
 use rustc_macros::{LintDiagnostic, Subdiagnostic};
 use rustc_middle::thir::Pat;
 use rustc_middle::ty::Ty;
 use rustc_span::Span;
 
-use crate::rustc::{RustcMatchCheckCtxt, WitnessPat};
+use crate::rustc::{RustcPatCtxt, WitnessPat};
 
 #[derive(Subdiagnostic)]
 #[label(pattern_analysis_uncovered)]
@@ -21,7 +21,7 @@ pub struct Uncovered<'tcx> {
 impl<'tcx> Uncovered<'tcx> {
     pub fn new<'p>(
         span: Span,
-        cx: &RustcMatchCheckCtxt<'p, 'tcx>,
+        cx: &RustcPatCtxt<'p, 'tcx>,
         witnesses: Vec<WitnessPat<'p, 'tcx>>,
     ) -> Self
     where
@@ -61,8 +61,8 @@ pub struct Overlap<'tcx> {
     pub range: Pat<'tcx>,
 }
 
-impl<'tcx> AddToDiagnostic for Overlap<'tcx> {
-    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
+impl<'tcx> Subdiagnostic for Overlap<'tcx> {
+    fn add_to_diag_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
         self,
         diag: &mut Diag<'_, G>,
         _: F,
@@ -109,8 +109,8 @@ pub struct GappedRange<'tcx> {
     pub first_range: Pat<'tcx>,
 }
 
-impl<'tcx> AddToDiagnostic for GappedRange<'tcx> {
-    fn add_to_diagnostic_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
+impl<'tcx> Subdiagnostic for GappedRange<'tcx> {
+    fn add_to_diag_with<G: EmissionGuarantee, F: SubdiagMessageOp<G>>(
         self,
         diag: &mut Diag<'_, G>,
         _: F,

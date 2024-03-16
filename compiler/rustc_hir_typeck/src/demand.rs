@@ -699,7 +699,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         hir::Path {
                             res:
                                 hir::def::Res::Def(
-                                    hir::def::DefKind::Static(_) | hir::def::DefKind::Const,
+                                    hir::def::DefKind::Static { .. } | hir::def::DefKind::Const,
                                     def_id,
                                 ),
                             ..
@@ -1071,7 +1071,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     err.span_suggestion_verbose(
                         *span,
                         "use the type name directly",
-                        self.tcx.value_path_str_with_args(*alias_to, e_args),
+                        self.tcx.value_path_str_with_args(e_def.did(), e_args),
                         Applicability::MaybeIncorrect,
                     );
                 }

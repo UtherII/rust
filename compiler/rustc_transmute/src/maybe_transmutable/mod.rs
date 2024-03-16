@@ -56,8 +56,8 @@ mod rustc {
                 }
                 (Err(Err::UnknownLayout), _) => Answer::No(Reason::SrcLayoutUnknown),
                 (_, Err(Err::UnknownLayout)) => Answer::No(Reason::DstLayoutUnknown),
-                (Err(Err::Unspecified), _) => Answer::No(Reason::SrcIsUnspecified),
-                (_, Err(Err::Unspecified)) => Answer::No(Reason::DstIsUnspecified),
+                (Err(Err::NotYetSupported), _) => Answer::No(Reason::SrcIsNotYetSupported),
+                (_, Err(Err::NotYetSupported)) => Answer::No(Reason::DstIsNotYetSupported),
                 (Err(Err::SizeOverflow), _) => Answer::No(Reason::SrcSizeOverflow),
                 (_, Err(Err::SizeOverflow)) => Answer::No(Reason::DstSizeOverflow),
                 (Ok(src), Ok(dst)) => MaybeTransmutableQuery { src, dst, assume, context }.answer(),
@@ -265,6 +265,11 @@ where
                                             Answer::No(Reason::DstHasStricterAlignment {
                                                 src_min_align: src_ref.min_align(),
                                                 dst_min_align: dst_ref.min_align(),
+                                            })
+                                        } else if dst_ref.size() > src_ref.size() {
+                                            Answer::No(Reason::DstRefIsTooBig {
+                                                src: src_ref,
+                                                dst: dst_ref,
                                             })
                                         } else {
                                             // ...such that `src` is transmutable into `dst`, if

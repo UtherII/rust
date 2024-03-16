@@ -196,6 +196,7 @@ fn check_well_formed(tcx: TyCtxt<'_>, def_id: hir::OwnerId) -> Result<(), ErrorG
         hir::OwnerNode::TraitItem(item) => check_trait_item(tcx, item),
         hir::OwnerNode::ImplItem(item) => check_impl_item(tcx, item),
         hir::OwnerNode::ForeignItem(item) => check_foreign_item(tcx, item),
+        hir::OwnerNode::AssocOpaqueTy(..) => unreachable!(),
     };
 
     if let Some(generics) = node.generics() {
@@ -1968,13 +1969,10 @@ impl<'tcx> WfCheckingCtxt<'_, 'tcx> {
             // Match the existing behavior.
             if pred.is_global() && !pred.has_type_flags(TypeFlags::HAS_BINDER_VARS) {
                 let pred = self.normalize(span, None, pred);
-                let hir_node = tcx.opt_hir_node_by_def_id(self.body_def_id);
 
                 // only use the span of the predicate clause (#90869)
-
-                if let Some(hir::Generics { predicates, .. }) =
-                    hir_node.and_then(|node| node.generics())
-                {
+                let hir_node = tcx.hir_node_by_def_id(self.body_def_id);
+                if let Some(hir::Generics { predicates, .. }) = hir_node.generics() {
                     span = predicates
                         .iter()
                         // There seems to be no better way to find out which predicate we are in
